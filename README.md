@@ -1,9 +1,15 @@
 # Ncompas Influencer Marketing MVP
 
-A small utility to access YouTube Data API v3 using either:
+End-to-end toolkit that downloads a video, pulls analytics/metrics, transcribes the audio,
+does basic sentiment + logo analysis and writes everything to `reports/<video-id>/` – all
+from a single URL.
 
-1. **Public API key** – fetch publicly available metadata without user authorization.
-2. **OAuth 2.0** – obtain an influencer’s authorization to access additional (private) channel data.
+The script automatically chooses the best authentication method that is available:
+
+1. **OAuth 2.0** – if `client_secret.json` is present (and the token can be created) the
+   pipeline fetches owner-only analytics such as audience-retention, watch-time, etc.
+2. **Public API key** – otherwise it falls back to a simple API-key and fetches everything
+   that is public.
 
 ## Features
 
@@ -38,31 +44,35 @@ OAUTH_CLIENT_SECRETS_FILE=client_secret.json
 OAUTH_TOKEN_FILE=oauth_token.json
 ```
 
-### 4. Fetch data
-
-Public metadata (no OAuth required):
-
-Ncompas Channel
+### 4. Run the pipeline (video URL → full report)
 
 ```bash
-python yt_data.py --channel-id UCBwUDcDZaYsfbscchwL_V0Q
+# Public-only mode
+python pipeline/fetch_and_analyze.py \
+       --url "https://youtu.be/VLwhqqEm2L8" \
+       --api-key "$YT_API_KEY"
+
+# Owner analytics mode – same command, OAuth files present in project root
+python pipeline/fetch_and_analyze.py \
+       --url "https://youtu.be/VLwhqqEm2L8"
 ```
 
-Access private data with OAuth (first run opens browser / console prompt):
+For simple channel metadata retrieval you can still use the helper:
 
 ```bash
-python yt_data.py --use-oauth --channel-id mine
+python pipeline/yt_data.py --channel-id UCBwUDcDZaYsfbscchwL_V0Q
 ```
-
-Subsequent runs reuse `oauth_token.json`.
 
 ## Project Structure
 
 ```
-├── config.py              # Config loader
-├── youtube_client.py      # Authentication helpers
-├── yt_data.py  # Example script
+├── config/        ← config.core.py (arg/env loader)
+├── auth/          ← auth.youtube.py (API key & OAuth helpers)
+├── video/         ← video.core.py (download, analytics, metrics)
+├── analysis/      ← analysis.core.py (transcript + comment sentiment, logos)
+├── pipeline/
+│   ├── fetch_and_analyze.py  ← main pipeline entry-point
+│   └── yt_data.py            ← lightweight channel-info helper
 ├── requirements.txt
-├── env
 └── README.md
 ```
