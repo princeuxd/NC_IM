@@ -1,4 +1,4 @@
-# YouTube Data Fetcher
+# Ncompas Influencer Marketing MVP
 
 A small utility to access YouTube Data API v3 using either:
 
