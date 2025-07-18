@@ -1,10 +1,10 @@
 """Configuration loader helpers."""
 
 from importlib import import_module
-from types import ModuleType
+from typing import Any
 
 
-def __getattr__(name: str) -> ModuleType:  # noqa: D401
+def __getattr__(name: str) -> Any:  # noqa: D401
     mod = import_module("config.core")
     value = getattr(mod, name)
     globals()[name] = value

@@ -6,6 +6,7 @@ __pycache__/
 .env
 client_secret.json
 oauth_token.json
+tokens/
 
 # Virtual env
 .venv/

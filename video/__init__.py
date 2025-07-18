@@ -1,10 +1,10 @@
 """Video processing helpers (download, analytics, etc.)."""
 
 from importlib import import_module
-from types import ModuleType
+from typing import Any
 
 
-def __getattr__(name: str) -> ModuleType:  # noqa: D401
+def __getattr__(name: str) -> Any:  # noqa: D401
     mod = import_module("video.core")
     value = getattr(mod, name)
     globals()[name] = value
@@ -18,4 +18,5 @@ __all__ = [
     "process_video",
     "download_video",
     "extract_audio",
+    "extract_frames",
 ] 

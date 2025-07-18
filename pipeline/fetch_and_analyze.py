@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from datetime import date
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -34,6 +35,7 @@ if str(ROOT) not in sys.path:
 import argparse
 import logging
 
+# traditional sentiment import left for fallback
 from analysis import (  # type: ignore[attr-defined]
     analyze_comment_sentiment,
     analyze_transcript_sentiment,
@@ -42,9 +44,17 @@ from analysis import (  # type: ignore[attr-defined]
     save as save_json,
     transcribe_audio,
 )
+from analysis.sentiment_llm import analyze_comment_sentiment_llm  # type: ignore[attr-defined]
 from config import parse_args as parse_base
-from video import process_video, extract_video_id  # type: ignore[attr-defined]
+from video import process_video, extract_video_id, extract_frames  # type: ignore[attr-defined]
+from analysis.object_detection import detect_objects  # type: ignore[attr-defined]
+from config.settings import SETTINGS
 from auth import get_oauth_service, get_public_service  # type: ignore[attr-defined]
+from analysis.analytics_helpers import (
+    fetch_engagement_timeseries,
+    correlate_products_with_engagement,
+)  # type: ignore[attr-defined]
+from analysis.summarizer import generate_summary  # type: ignore[attr-defined]
 
 logging.basicConfig(level=logging.INFO)
 
@@ -118,19 +128,52 @@ def main():
 
     # ------------ Comments sentiment ---------------
     comments = fetch_comments(pub_service, vid)  # type: ignore[arg-type]
-    comments_sent = analyze_comment_sentiment(comments)
+    # Prefer LLM sentiment if credentials available
+    if SETTINGS.openrouter_api_key or SETTINGS.groq_api_key:
+        comments_sent = analyze_comment_sentiment_llm(comments)
+    else:
+        comments_sent = analyze_comment_sentiment(comments)
     save_json(comments_sent, root / "comments_sentiment.json")
 
     # ------------ Logo / product detection ---------
     mp4_path = root / f"{vid}.mp4"
     if mp4_path.exists():
+        # -------------- Frame extraction + object detection --------------
+        frames = extract_frames(
+            mp4_path,
+            root / "frames",
+            every_sec=SETTINGS.frame_interval_sec,
+        )
+        detections = []
+        if frames:
+            detections = detect_objects(frames)
+            save_json(detections, root / "product_frames.json")
+
         try:
-            logo_segments = detect_logos(mp4_path)
-            save_json(logo_segments, root / "logo_segments.json")
+            logos = detect_logos(mp4_path)
+            save_json(logos, root / "logo_segments.json")
         except Exception as exc:  # pylint: disable=broad-except
             logging.warning("Logo detection skipped (%s)", exc)
 
+        # -------------- Correlate with engagement metrics --------------
+        if analytics_service and channel_id and detections:
+            today = date.today()
+            start = today.replace(year=today.year - 1)  # 1 year window
+            ts_rows = fetch_engagement_timeseries(
+                analytics_service,
+                vid,
+                channel_id,
+                start_date=start,
+                end_date=today,
+            )
+            if ts_rows:
+                enriched = correlate_products_with_engagement(detections, ts_rows)
+                save_json(enriched, root / "product_impact.json")
+
     logging.info("All done. Results in %s", root)
+
+    # -------------- Executive summary --------------
+    generate_summary(root)  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

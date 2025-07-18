@@ -21,7 +21,8 @@ import tempfile
 import urllib.parse
 from datetime import date
 from pathlib import Path
-from typing import Any, Optional, List
+from typing import Any, Optional, List, Tuple
+from PIL import Image  # type: ignore
 
 from googleapiclient.discovery import Resource  # type: ignore
 from auth import get_public_service
@@ -187,6 +188,59 @@ def extract_audio(video_file: Path | str, wav_path: Optional[Path | str] = None)
     logger.info("Extracting audio to %s", wav_path)
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return wav_path
+
+# ---------------------------------------------------------------------------
+# Frame extraction helper for vision models
+# ---------------------------------------------------------------------------
+
+
+def extract_frames(
+    video_file: Path | str,
+    out_dir: Path | str,
+    every_sec: int = 5,
+    limit: Optional[int] = None,
+) -> List[Tuple[float, Path]]:
+    """Extract JPEG frames every ``every_sec`` seconds.
+
+    Returns a list of tuples ``(timestamp_sec, frame_path)``. If *limit* is
+    provided, extraction stops after that many frames (useful for quick demos).
+    Requires ``ffmpeg`` in PATH.
+    """
+    video_file = Path(video_file)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if shutil.which("ffmpeg") is None:
+        logger.warning("ffmpeg not found – skipping frame extraction.")
+        return []
+
+    # Use ffmpeg to sample frames at regular interval.
+    # -vf fps=1/N yields one frame per N seconds.
+    pattern = out_dir / "frame_%06d.jpg"
+    cmd = [
+        "ffmpeg",
+        "-y",  # overwrite existing
+        "-i",
+        str(video_file),
+        "-vf",
+        f"fps=1/{every_sec}",
+        "-q:v",
+        "2",  # quality (low number = high quality)
+        str(pattern),
+    ]
+    logger.info("Extracting frames every %ds from %s", every_sec, video_file)
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    frames = sorted(out_dir.glob("frame_*.jpg"))
+    if limit is not None:
+        frames = frames[:limit]
+
+    # Build (timestamp, path) list; ts = index * interval seconds.
+    result: List[Tuple[float, Path]] = [
+        (idx * every_sec, p) for idx, p in enumerate(frames)
+    ]
+    logger.info("Extracted %d frames to %s", len(result), out_dir)
+    return result
 
 # ---------------------------------------------------------------------------
 # Orchestrator

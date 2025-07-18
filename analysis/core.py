@@ -77,8 +77,20 @@ def analyze_transcript_sentiment(segments: List[dict[str, Any]]) -> List[dict[st
 
 from googleapiclient.discovery import Resource  # type: ignore
 
-def fetch_comments(service: Resource, video_id: str, max_pages: int = 10) -> List[dict[str, Any]]:
-    """Fetch up to ~500 top-level comments (adjust pages)."""
+def fetch_comments(
+    service: Resource,
+    video_id: str,
+    max_pages: int = 10,
+    *,
+    order: str = "relevance",
+) -> List[dict[str, Any]]:
+    """Fetch top-level comments.
+
+    When using an **API key** the YouTube Data API does **not** allow
+    ``order="relevance"`` and returns HTTP 403 ``insufficientPermissions``.
+    In that case we transparently retry with ``order="time"`` so the caller
+    still gets comments instead of an empty list.
+    """
     comments = []
     next_token = None
     for _ in range(max_pages):
@@ -87,12 +99,24 @@ def fetch_comments(service: Resource, video_id: str, max_pages: int = 10) -> Lis
             videoId=video_id,
             pageToken=next_token,
             maxResults=100,
-            order="relevance",
+            order=order,
             textFormat="plainText",
         )
         try:
             resp = req.execute()
         except Exception as exc:  # pylint: disable=broad-except
+            # If relevance ordering is not permitted with an API key, retry once
+            # with the chronological ordering which *is* allowed.
+            if order == "relevance" and "insufficientPermissions" in str(exc):
+                logger.info(
+                    "order='relevance' not allowed without OAuth; retrying with order='time'"
+                )
+                return fetch_comments(
+                    service,
+                    video_id,
+                    max_pages=max_pages,
+                    order="time",
+                )
             logger.warning("Comment fetch failed (%s). Returning what we have.", exc)
             break
         for item in resp.get("items", []):
@@ -111,9 +135,22 @@ def fetch_comments(service: Resource, video_id: str, max_pages: int = 10) -> Lis
 
 
 def analyze_comment_sentiment(comments: List[dict[str, Any]]):
+    """Attach language + polarity to each comment.
+
+    Handles cases where the comment text is empty or langdetect fails by
+    gracefully falling back to empty strings / None so that downstream code
+    never crashes (e.g. Streamlit app)."""
     for c in comments:
-        c["lang"] = langdetect.detect(c["text"]) if c.get("text") else ""
-        c["sentiment"] = sentiment(c["text"])
+        txt = c.get("text") or ""
+        lang = ""
+        if txt.strip():
+            try:
+                # langdetect raises when the text has too few features (< 3 chars).
+                lang = langdetect.detect(txt)
+            except langdetect.lang_detect_exception.LangDetectException:  # type: ignore[attr-defined]
+                lang = ""
+        c["lang"] = lang
+        c["sentiment"] = sentiment(txt) if txt.strip() else 0.0
     return comments
 
 # ---------------------------------------------------------------------------

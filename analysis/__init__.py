@@ -1,10 +1,10 @@
 """Analysis utilities namespace (sentiment, comments, etc.)."""
 
 from importlib import import_module
-from types import ModuleType
+from typing import Any
 
 
-def __getattr__(name: str) -> ModuleType:  # noqa: D401
+def __getattr__(name: str) -> Any:  # noqa: D401
     mod = import_module("analysis.core")
     value = getattr(mod, name)
     globals()[name] = value
