@@ -45,17 +45,29 @@ logger = logging.getLogger(__name__)
 
 def _configure_client(settings: PipelineSettings = SETTINGS):
     """Set up OpenAI-compatible client for either OpenRouter or Groq."""
+    from openai import OpenAI
 
     if settings.openrouter_api_key:
-        openai.api_key = settings.openrouter_api_key  # type: ignore[attr-defined]
-        openai.base_url = "https://openrouter.ai/v1"  # correct path
-        # Identify our integration – optional but recommended by OpenRouter docs
-        openai.http_client = None  # reset custom client if previously set
-        return
+        client = OpenAI(
+            api_key=settings.openrouter_api_key,
+            base_url="https://openrouter.ai/api/v1",
+            default_headers={
+                "HTTP-Referer": "https://github.com/your-repo",
+                "X-Title": "YouTube Video Analyzer"
+            }
+        )
+        # Store client globally for use in detect_objects
+        globals()['_openai_client'] = client
+        return client
+    
     if settings.groq_api_key:
-        openai.api_key = settings.groq_api_key  # type: ignore[attr-defined]
-        openai.base_url = "https://api.groq.com/openai/v1"  # type: ignore[attr-defined]
-        return
+        client = OpenAI(
+            api_key=settings.groq_api_key,
+            base_url="https://api.groq.com/openai/v1"
+        )
+        globals()['_openai_client'] = client
+        return client
+    
     raise RuntimeError("No OPENROUTER_API_KEY or GROQ_API_KEY configured for vision LLM.")
 
 
@@ -129,25 +141,21 @@ def detect_objects(
         )
 
         try:
-            # Support both openai>=1.0 (openai.chat.completions) and legacy <1.0
-            if hasattr(openai, "chat"):
-                response = openai.chat.completions.create(  # type: ignore[attr-defined]
+            # Use the properly configured client
+            client = globals().get('_openai_client')
+            if client:
+                response = client.chat.completions.create(
                     model=settings.object_detection_model,
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": content},
                     ],
                     temperature=0.2,
+                    timeout=30  # Add timeout for better error handling
                 )
             else:
-                response = openai.ChatCompletion.create(  # type: ignore[attr-defined]
-                    model=settings.object_detection_model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": content},
-                    ],
-                    temperature=0.2,
-                )
+                logger.error("No OpenAI client configured")
+                continue
 
             # The OpenRouter shim or legacy OpenAI clients may return a plain
             # string instead of a ``ChatCompletion`` object.  Handle both.
