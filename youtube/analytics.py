@@ -145,9 +145,42 @@ def geography_breakdown(
     return resp.get("rows", [])
 
 
+def demographics_breakdown(
+    data_service: Resource,
+    video_id: str,
+    channel_id: str,
+    *,
+    days_back: int = 28,
+) -> List[List[Any]]:
+    """Viewer percentage by age group and gender.
+
+    Returns list rows of [ageGroup, gender, viewerPercentage].
+    """
+
+    end = date.today()
+    start = end - timedelta(days=days_back)
+
+    analytics = _get_analytics_service(data_service)
+    resp = (
+        analytics.reports()
+        .query(
+            ids=f"channel=={channel_id}",
+            startDate=start.isoformat(),
+            endDate=end.isoformat(),
+            metrics="viewerPercentage",
+            dimensions="ageGroup,gender",
+            filters=f"video=={video_id}",
+            maxResults=200,
+        )
+        .execute()
+    )
+    return resp.get("rows", [])
+
+
 __all__ = [
     "video_summary_metrics",
     "audience_retention",
     "traffic_sources",
     "geography_breakdown",
+    "demographics_breakdown",
 ] 

@@ -597,7 +597,7 @@ def get_enhanced_analytics(service_info, video_id, days_back=30):
                 ids=f"channel=={channel_id}",
                 startDate=start_date.strftime("%Y-%m-%d"),
                 endDate=end_date.strftime("%Y-%m-%d"),
-                metrics="views,estimatedMinutesWatched,averageViewDuration,subscribersGained",
+                metrics="views,estimatedMinutesWatched,averageViewDuration,subscribersGained,likes,comments",
                 dimensions="video",
                 filters=f"video=={video_id}",
                 maxResults=1,
@@ -624,7 +624,7 @@ def get_enhanced_analytics(service_info, video_id, days_back=30):
         except Exception as e:
             logger.warning(f"Retention data failed: {e}")
 
-        # Get traffic sources (simplified)
+        # Get traffic sources
         traffic_sources = None
         try:
             traffic_sources = (
@@ -643,10 +643,50 @@ def get_enhanced_analytics(service_info, video_id, days_back=30):
         except Exception as e:
             logger.warning(f"Traffic sources failed: {e}")
 
+        # Geography breakdown (top countries)
+        geography_data = None
+        try:
+            geography_data = (
+                analytics_service.reports()
+                .query(
+                    ids=f"channel=={channel_id}",
+                    startDate=start_date.strftime("%Y-%m-%d"),
+                    endDate=end_date.strftime("%Y-%m-%d"),
+                    metrics="views",
+                    dimensions="country",
+                    filters=f"video=={video_id}",
+                    maxResults=250,
+                )
+                .execute()
+            )
+        except Exception as e:
+            logger.warning(f"Geography breakdown failed: {e}")
+
+        # Demographics: age & gender
+        demographics_data = None
+        try:
+            demographics_data = (
+                analytics_service.reports()
+                .query(
+                    ids=f"channel=={channel_id}",
+                    startDate=start_date.strftime("%Y-%m-%d"),
+                    endDate=end_date.strftime("%Y-%m-%d"),
+                    metrics="viewerPercentage",
+                    dimensions="ageGroup,gender",
+                    filters=f"video=={video_id}",
+                    maxResults=200,
+                )
+                .execute()
+            )
+        except Exception as e:
+            logger.warning(f"Demographics data failed: {e}")
+
         return {
             "video_analytics": video_analytics,
             "retention_data": retention_data,
             "traffic_sources": traffic_sources,
+            "geography_data": geography_data,
+            "demographics_data": demographics_data,
             "period": f"{start_date} to {end_date}",
         }
 
@@ -667,7 +707,7 @@ def display_enhanced_analytics(analytics_data, video_title):
     if video_data.get("rows"):
         row = video_data["rows"][0]
 
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5, col6 = st.columns(6)
         with col1:
             st.metric("📈 Total Views", f"{int(row[1]):,}")
         with col2:
@@ -675,7 +715,11 @@ def display_enhanced_analytics(analytics_data, video_title):
         with col3:
             st.metric("🎯 Avg Duration", f"{int(row[3]):,} sec")
         with col4:
-            st.metric("📊 Subscribers", f"+{int(row[4]):,}")
+            st.metric("👥 Subscribers", f"+{int(row[4]):,}")
+        with col5:
+            st.metric("👍 Likes", f"{int(row[5]):,}")
+        with col6:
+            st.metric("💬 Comments", f"{int(row[6]):,}")
 
     # Audience retention
     retention_data = analytics_data["retention_data"]
@@ -759,6 +803,35 @@ def display_enhanced_analytics(analytics_data, video_title):
         else:
             st.info("No traffic source data available")
 
+    # Geography breakdown
+    geo = analytics_data.get("geography_data")
+    if geo and geo.get("rows"):
+        st.subheader("🌍 Top Countries")
+        rows = sorted(geo["rows"], key=lambda r: int(r[1]), reverse=True)[:10]
+        table = [{"Country": r[0], "Views": f"{int(r[1]):,}"} for r in rows]
+        st.table(table)
+
+    # Demographics breakdown
+    demo = analytics_data.get("demographics_data")
+    if demo and demo.get("rows"):
+        st.subheader("👥 Audience Demographics")
+
+        # Build age->gender map
+        age_map = {}
+        for age, gender, perc in demo["rows"]:
+            if age not in age_map:
+                age_map[age] = {"Male %": 0.0, "Female %": 0.0, "Other %": 0.0}
+            key = "Male %" if gender.lower() == "male" else "Female %" if gender.lower() == "female" else "Other %"
+            age_map[age][key] = round(float(perc), 2)
+
+        demo_table = []
+        for age_group in sorted(age_map.keys()):
+            row = {"Age Group": age_group}
+            row.update(age_map[age_group])
+            demo_table.append(row)
+
+        st.table(demo_table)
+
     st.caption(f"📅 Data period: {analytics_data['period']}")
 
     # Show what data is available
@@ -769,6 +842,10 @@ def display_enhanced_analytics(analytics_data, video_title):
         data_available.append("✅ Audience Retention")
     if traffic_data and traffic_data.get("rows"):
         data_available.append("✅ Traffic Sources")
+    if geo and geo.get("rows"):
+        data_available.append("✅ Geography")
+    if demo and demo.get("rows"):
+        data_available.append("✅ Demographics")
 
     if data_available:
         st.caption(f"**Available data:** {', '.join(data_available)}")
@@ -1221,16 +1298,163 @@ File: {client_secret_path}
 
 
 # ---------------------------------------------------------------------------
+# Video Statistics section – OAuth-aware analytics & public fallback
+# ---------------------------------------------------------------------------
+
+def video_statistics_section():
+    """Display rich video statistics with OAuth upgrades when available."""
+
+    st.title("📊 Video Statistics")
+
+    url = st.text_input(
+        "YouTube video URL",
+        placeholder="https://youtu.be/abc123XYZ",
+        key="stats_url",
+    )
+
+    if st.button("Get Statistics", key="run_stats"):
+        if not url.strip():
+            st.error("Please enter a YouTube URL")
+            return
+
+        # Extract video ID
+        try:
+            vid = extract_video_id(url)
+        except Exception as exc:
+            st.error(f"Failed to extract video ID: {exc}")
+            return
+
+        # We need a Data API key for public fallback
+        if not yt_key:
+            st.error("YT_API_KEY not configured – please set the env variable for public access")
+            return
+
+        # Get best-available services (public and/or OAuth)
+        service_info = get_enhanced_service(yt_key, vid)
+
+        # Inform user about access capabilities
+        display_access_level(service_info)
+
+        # Choose whichever service is available for public data fetches
+        svc = service_info.get("oauth_service") or service_info["public_service"]
+
+        # ------------------------------------------------------------------
+        # Fetch basic video metadata & statistics
+        # ------------------------------------------------------------------
+        try:
+            v_resp = (
+                svc.videos()
+                .list(
+                    part="snippet,statistics,contentDetails",
+                    id=vid,
+                )
+                .execute()
+            )
+            if not v_resp["items"]:
+                st.warning("No video found – please check the URL")
+                return
+            v_item = v_resp["items"][0]
+        except Exception as exc:
+            st.error(f"Failed to fetch video details: {exc}")
+            return
+
+        snippet = v_item["snippet"]
+        stats = v_item.get("statistics", {})
+        content = v_item.get("contentDetails", {})
+
+        # Friendly formatting helpers
+        def fmt_num(val: str | int | None):
+            try:
+                num = int(val or 0)
+            except Exception:
+                return "0"
+            if num >= 1_000_000:
+                return f"{num/1_000_000:.1f}M"
+            if num >= 1_000:
+                return f"{num/1_000:.1f}K"
+            return f"{num:,}"
+
+        import re
+
+        def parse_iso_duration(iso: str) -> str:
+            """Convert ISO-8601 duration (PT#H#M#S) to HH:MM:SS string."""
+            if not iso:
+                return "00:00:00"
+
+            pattern = re.compile(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?")
+            m = pattern.match(iso)
+            if not m:
+                return iso  # Fallback to raw string if parsing fails
+
+            h, mnt, s = (int(x) if x else 0 for x in m.groups())
+            return f"{h:02d}:{mnt:02d}:{s:02d}"
+
+        # ------------------------------------------------------------------
+        # Layout: thumbnail & basic info
+        # ------------------------------------------------------------------
+        col_thumb, col_meta = st.columns([1, 3])
+        with col_thumb:
+            thumb_url = (
+                snippet.get("thumbnails", {})
+                .get("high", {})
+                .get("url")
+                or snippet.get("thumbnails", {})
+                .get("default", {})
+                .get("url")
+            )
+            if thumb_url:
+                st.image(thumb_url, width=320)
+        with col_meta:
+            st.markdown(f"### {snippet.get('title', 'Unknown Title')}")
+            st.caption(f"Published: {snippet.get('publishedAt', 'N/A')[:10]}")
+            st.caption(f"Duration: {parse_iso_duration(content.get('duration', ''))}")
+            if snippet.get("tags"):
+                st.caption("🏷️ " + ", ".join(snippet["tags"][:10]))
+
+        # ------------------------------------------------------------------
+        # Metrics grid
+        # ------------------------------------------------------------------
+        views = fmt_num(stats.get("viewCount"))
+        likes = fmt_num(stats.get("likeCount"))
+        comments_cnt = fmt_num(stats.get("commentCount"))
+        favorites = fmt_num(stats.get("favoriteCount"))
+
+        mcol1, mcol2, mcol3, mcol4 = st.columns(4)
+        mcol1.metric("👀 Views", views)
+        mcol2.metric("👍 Likes", likes)
+        mcol3.metric("💬 Comments", comments_cnt)
+        mcol4.metric("⭐ Favourites", favorites)
+
+        # ------------------------------------------------------------------
+        # Channel statistics (public)
+        # ------------------------------------------------------------------
+        channel_id = snippet.get("channelId")
+        if channel_id:
+            ch_stats = get_channel_stats(svc, channel_id)
+            display_channel_stats(ch_stats)
+
+        # ------------------------------------------------------------------
+        # OAuth-powered enhanced analytics (if available & owned)
+        # ------------------------------------------------------------------
+        analytics_data = get_enhanced_analytics(service_info, vid)
+        if analytics_data:
+            display_enhanced_analytics(analytics_data, snippet.get("title", "Video"))
+        else:
+            st.info("Only public metrics available – OAuth analytics not accessible for this video.")
+
+
+# ---------------------------------------------------------------------------
 # App entry point – single page
 # ---------------------------------------------------------------------------
 
 
 def main():
     st.set_page_config(page_title="YouTube Creator OAuth Manager", layout="wide")
-    tab_onboard, tab_audio, tab_video = st.tabs([
+    tab_onboard, tab_audio, tab_video, tab_stats = st.tabs([
         "Creator Onboarding",
         "Audio Analyzer",
         "Video Analyzer",
+        "Video Statistics",
     ])
 
     with tab_onboard:
@@ -1241,6 +1465,9 @@ def main():
 
     with tab_video:
         video_analyzer_section()
+
+    with tab_stats:
+        video_statistics_section()
 
 
 if __name__ == "__main__":
