@@ -38,7 +38,7 @@ class PipelineSettings:
         "OPENROUTER_CHAT_MODEL", "google/gemini-2.0-flash-exp:free"
     )
     groq_chat_model: str = os.getenv(
-        "GROQ_CHAT_MODEL", "mixtral-8x7b-32768"
+        "GROQ_CHAT_MODEL", "gemma2-9b-it"
     )
 
 

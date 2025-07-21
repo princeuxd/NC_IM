@@ -3,16 +3,18 @@ import json
 from pathlib import Path
 
 import streamlit as st
+from youtube.oauth import get_service as get_oauth_service
 
 from youtube.public import get_service as get_public_service
-from youtube.oauth import get_service as get_oauth_service
 from analysis.video_frames import (
     extract_video_id,
     download_video,
     extract_frames,
 )
+from analysis.audio import extract_audio, transcribe as transcribe_audio
+from llms import get_client
+from config.settings import SETTINGS
 
-from analysis.audio import extract_audio
 from dotenv import load_dotenv  # type: ignore
 import logging
 import warnings
@@ -24,6 +26,7 @@ from auth.manager import (
     remove_creator as _remove_creator,
     refresh_creator_token,
 )
+from analysis.video_vision import summarise_frames
 
 # Set up logging to see what's happening
 logging.basicConfig(level=logging.INFO)
@@ -205,6 +208,153 @@ def display_channel_stats(channel_stats: dict):
                 st.caption(f"**📅 Channel Age:** {days_old} days")
     except Exception as e:
         logger.error(f"Failed to parse channel age: {e}")
+
+# ---------------------------------------------------------------------------
+# Audio Analyzer section
+# ---------------------------------------------------------------------------
+
+
+def audio_analyzer_section():
+    st.title("🎤 Audio Analyzer")
+
+    url = st.text_input(
+        "YouTube video URL",
+        placeholder="https://youtu.be/abc123XYZ",
+        key="audio_url",
+    )
+
+    if st.button("Run Audio Analysis", key="run_audio"):
+        if not url.strip():
+            st.error("Please enter a YouTube URL")
+            return
+
+        vid = extract_video_id(url)
+        out_dir = REPORTS_DIR / vid
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        with st.spinner("Downloading video..."):
+            try:
+                mp4_path = download_video(url, out_dir)
+            except Exception as e:
+                st.error(f"Download failed: {e}")
+                return
+
+        with st.spinner("Extracting audio track..."):
+            wav_path = extract_audio(mp4_path, out_dir / "audio.wav")
+            if not wav_path.exists():
+                st.error("Failed to extract audio (ffmpeg missing?)")
+                return
+
+        with st.spinner("Transcribing audio …"):
+            segments = transcribe_audio(wav_path)
+
+        if not segments:
+            st.warning("No transcript returned.")
+            return
+
+        # Combine transcript text (simple concatenation)
+        full_text = "\n".join(s.get("text", "") for s in segments)
+
+        if not SETTINGS.openrouter_api_key:
+            st.warning("OpenRouter API key not configured – cannot generate summary.")
+            return
+
+        with st.spinner("Generating summary via LLM …"):
+            client = get_client("openrouter", SETTINGS.openrouter_api_key)
+            prompt_msg = (
+                "You are a podcast/video-transcript analyst. Based on the raw transcript, "
+                "return a concise markdown report with the following sections:\n\n"
+                "1. **Summary** – 3-5 bullet points describing the main ideas.\n"
+                "2. **Overall Sentiment** – Positive / Neutral / Negative with one-sentence justification.\n"
+                "3. **Category** – choose best fit from {Lifestyle, Education, Technology, Gaming, Health, Finance, Entertainment, Travel, Food, Sports, News}.\n"
+                "4. **Products / Brands Mentioned** – bullet list of product names or brand references found in the transcript. If none, write 'None mentioned'."
+            )
+
+            try:
+                summary = client.chat(
+                    [
+                        {"role": "system", "content": prompt_msg},
+                        {"role": "user", "content": full_text[:12000]},
+                    ],
+                    model=SETTINGS.openrouter_chat_model,
+                    temperature=0.3,
+                    max_tokens=512,
+                )
+            except Exception as e:
+                # Fallback to Groq if key present
+                if SETTINGS.groq_api_key:
+                    g_client = get_client("groq", SETTINGS.groq_api_key)
+                    summary = g_client.chat(
+                        [
+                            {"role": "system", "content": prompt_msg},
+                            {"role": "user", "content": full_text[:12000]},
+                        ],
+                        temperature=0.3,
+                        max_tokens=512,
+                    )
+                else:
+                    st.error(f"LLM call failed: {e}")
+                    return
+
+        st.subheader("📝 Video Summary")
+        st.markdown(summary)
+
+
+# Video Analyzer section (frame → vision LLM summary)
+
+
+def video_analyzer_section():
+    st.title("🖼️ Video Frame Analyzer")
+
+    url = st.text_input(
+        "YouTube video URL",
+        placeholder="https://youtu.be/abc123XYZ",
+        key="video_url",
+    )
+
+    every_sec = st.slider("Frame interval (seconds)", 1, 30, 5)
+    max_frames = st.slider("Max frames to send", 4, 16, 8)
+
+    if st.button("Summarise Video", key="run_video"):
+        if not SETTINGS.openrouter_api_key:
+            st.error("OPENROUTER_API_KEY not configured in environment.")
+            return
+
+        if not url.strip():
+            st.error("Please enter a YouTube URL")
+            return
+
+        vid = extract_video_id(url)
+        out_dir = REPORTS_DIR / vid
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        with st.spinner("Downloading video …"):
+            try:
+                mp4_path = download_video(url, out_dir)
+            except Exception as e:
+                st.error(f"Download failed: {e}")
+                return
+
+        with st.spinner("Extracting frames …"):
+            frames = extract_frames(mp4_path, out_dir / "frames", every_sec=every_sec)
+            if not frames:
+                st.error("No frames extracted – ffmpeg missing?")
+                return
+
+            frames = frames[:max_frames]
+
+        with st.spinner("Generating vision summary …"):
+            try:
+                summary = summarise_frames(frames)
+            except Exception as e:
+                st.error(f"Vision LLM call failed: {e}")
+                return
+
+        st.subheader("📄 Frame-based Summary")
+        st.markdown(summary)
+
+        with st.expander("Preview Frames"):
+            st.image([str(p) for _, p in frames], width=160)
 
 
 # ---------------------------------------------------------------------------
@@ -754,7 +904,7 @@ def get_enhanced_comments(service_info, video_id):
 
 
 # ---------------------------------------------------------------------------
-# UI sections
+# UI section: only Creator Onboarding remains
 # ---------------------------------------------------------------------------
 
 
@@ -1070,263 +1220,28 @@ File: {client_secret_path}
                         )
 
 
-def frame_analyzer_section():
-    st.title("🖼️ Frame-by-Frame Analyzer")
-    st.markdown(
-        "Detailed analysis with OAuth-enhanced transcript and comment data when available."
-    )
-
-    st.info("💡 OAuth enhancement automatically detected for deeper insights")
-
-    # Input section
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        url = st.text_input(
-            "YouTube video URL",
-            placeholder="https://youtu.be/abc123XYZ",
-            key="frame_url",
-        )
-    with col2:
-        api_key = st.text_input(
-            "YouTube API key",
-            value=os.getenv("YT_API_KEY", ""),
-            type="password",
-            key="frame_api_key",
-        )
-
-    # OpenRouter API for vision analysis
-    openrouter_key = st.text_input(
-        "OpenRouter API key (for vision analysis)",
-        value=os.getenv("OPENROUTER_API_KEY", ""),
-        type="password",
-        key="frame_openrouter",
-    )
-
-    # Analysis settings
-    st.subheader("⚙️ Analysis Settings")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        frame_interval = st.slider("Frame extraction interval (seconds)", 1, 30, 5)
-    with col2:
-        max_frames = st.slider("Maximum frames to analyze", 5, 50, 20)
-    with col3:
-        show_transcript = st.checkbox("Show detailed transcript", value=True)
-
-    if st.button("Analyze Frames & Audio", key="analyze_frames", type="primary"):
-        if not url or not api_key:
-            st.error("Please provide both video URL and YouTube API key.")
-            return
-
-        vid = extract_video_id(url)
-        out_dir = REPORTS_DIR / vid
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        # Get enhanced service with OAuth detection
-        service_info = get_enhanced_service(api_key, vid)
-        display_access_level(service_info)
-
-        # Get and display video info
-        with st.spinner("Fetching video information..."):
-            try:
-                service = service_info["public_service"]
-                video_response = (
-                    service.videos().list(part="snippet,statistics", id=vid).execute()
-                )
-                if not video_response["items"]:
-                    st.error("Video not found or is private")
-                    return
-
-                video_info = video_response["items"][0]
-                video_snippet = video_info["snippet"]
-                video_stats = video_info["statistics"]
-
-                st.subheader(f"🎬 {video_snippet['title']}")
-
-                # Enhanced analytics if available
-                analytics_data = get_enhanced_analytics(service_info, vid)
-                if analytics_data:
-                    display_enhanced_analytics(analytics_data, video_snippet["title"])
-                else:
-                    # Show basic stats
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric(
-                            "👀 Views", f"{int(video_stats.get('viewCount', 0)):,}"
-                        )
-                    with col2:
-                        st.metric(
-                            "👍 Likes", f"{int(video_stats.get('likeCount', 0)):,}"
-                        )
-                    with col3:
-                        st.metric(
-                            "💬 Comments",
-                            f"{int(video_stats.get('commentCount', 0)):,}",
-                        )
-
-            except Exception as e:
-                st.error(f"Failed to fetch video info: {e}")
-                return
-
-        # Process video and extract frames
-        with st.spinner("Processing video and extracting frames..."):
-            try:
-                mp4_path = download_video(url, out_dir)
-                # Extract audio track
-                extract_audio(mp4_path, out_dir / "audio.wav")
-
-                # Extract frames
-                # mp4_path = out_dir / f"{vid}.mp4" - This is now returned by download_video
-                frames_dir = out_dir / "frames_analysis"
-                frames_dir.mkdir(exist_ok=True)
-
-                if mp4_path.exists():
-                    frames = extract_frames(
-                        mp4_path, frames_dir, every_sec=frame_interval
-                    )
-                    frames = frames[:max_frames]  # Limit number of frames
-                    st.success(f"✅ Extracted {len(frames)} frames for analysis")
-                else:
-                    st.error("Video file not found.")
-                    return
-
-            except Exception as e:
-                st.error(f"Video processing failed: {e}")
-                return
-
-        # Transcribe audio for detailed analysis
-        transcript_segments = []
-        wav_path = out_dir / "audio.wav"
-        if wav_path.exists():
-            with st.spinner("Transcribing and analyzing audio..."):
-                try:
-                    from analysis.audio import transcribe as transcribe_audio
-                    from analysis.audio import (
-                        attach_sentiment as analyze_transcript_sentiment,
-                    )
-
-                    segments = transcribe_audio(wav_path)
-                    transcript_segments = analyze_transcript_sentiment(segments)
-                    (out_dir / "transcript_sentiment.json").write_text(
-                        json.dumps(transcript_segments, indent=2, ensure_ascii=False)
-                    )
-
-                    if show_transcript:
-                        # Show transcript overview
-                        st.subheader("🎤 Audio Transcript Overview")
-                        sentiments = [
-                            s.get("sentiment", 0)
-                            for s in transcript_segments
-                            if "sentiment" in s
-                        ]
-                        if sentiments:
-                            avg_sentiment = sum(sentiments) / len(sentiments)
-                            positive = sum(1 for s in sentiments if s > 0.1)
-                            negative = sum(1 for s in sentiments if s < -0.1)
-                            neutral = len(sentiments) - positive - negative
-
-                            col1, col2, col3, col4 = st.columns(4)
-                            with col1:
-                                st.metric("📈 Avg Sentiment", f"{avg_sentiment:.2f}")
-                            with col2:
-                                st.metric("😊 Positive", f"{positive}")
-                            with col3:
-                                st.metric("😐 Neutral", f"{neutral}")
-                            with col4:
-                                st.metric("😟 Negative", f"{negative}")
-
-                        # Show detailed transcript segments
-                        st.subheader("📝 Detailed Transcript Segments")
-                        for i, segment in enumerate(transcript_segments):
-                            start_time = segment.get("start", 0)
-                            end_time = segment.get("end", 0)
-                            text = segment.get("text", "")
-                            sentiment = segment.get("sentiment", 0)
-
-                            if sentiment > 0.1:
-                                emoji = "😊"
-                                color = "green"
-                            elif sentiment < -0.1:
-                                emoji = "😟"
-                                color = "red"
-                            else:
-                                emoji = "😐"
-                                color = "gray"
-
-                            with st.expander(
-                                f"{emoji} {start_time:.1f}s - {end_time:.1f}s (Sentiment: {sentiment:.2f})"
-                            ):
-                                st.markdown(f"**Text:** {text}")
-                                st.markdown(f"**Sentiment:** :{color}[{sentiment:.2f}]")
-                                st.markdown(
-                                    f"**Duration:** {end_time - start_time:.1f} seconds"
-                                )
-
-                        st.success(
-                            f"✅ Transcribed and analyzed {len(transcript_segments)} segments!"
-                        )
-
-                except Exception as e:
-                    st.warning(f"Audio transcription failed: {e}")
-
-        # Frame-by-frame analysis with vision AI
-        if frames:
-            st.subheader("🔍 Frame-by-Frame Visual Analysis")
-
-            # Display frames with audio sentiments only (vision analysis removed)
-            for i, (timestamp, frame_path) in enumerate(frames):
-                audio_text = ""
-                audio_sentiment = 0
-                for segment in transcript_segments:
-                    if segment.get("start", 0) <= timestamp <= segment.get("end", 0):
-                        audio_text = segment.get("text", "")
-                        audio_sentiment = segment.get("sentiment", 0)
-                        break
-
-                with st.expander(f"🖼️ Frame {i+1} - {timestamp:.1f}s"):
-                    col1, col2 = st.columns([1, 2])
-
-                    with col1:
-                        st.image(str(frame_path), caption=f"Frame at {timestamp:.1f}s")
-
-                    with col2:
-                        st.markdown(f"**⏱️ Timestamp:** {timestamp:.1f} seconds")
-                        if audio_text:
-                            sentiment_emoji = (
-                                "😊"
-                                if audio_sentiment > 0.1
-                                else "😟" if audio_sentiment < -0.1 else "😐"
-                            )
-                            st.markdown(f"**🎤 Audio:** {audio_text}")
-                            st.markdown(
-                                f"**😊 Sentiment:** {sentiment_emoji} {audio_sentiment:.2f}"
-                            )
-                        else:
-                            st.markdown("**🎤 Audio:** No audio at this timestamp")
-            st.success(f"✅ Displayed {len(frames)} frames!")
-
-        # Show access level summary
-        access_level = service_info["access_level"]
-        if access_level == "oauth_full":
-            st.success(
-                "🎉 Analysis complete with full OAuth access! Enhanced transcript and analytics available."
-            )
-        elif access_level == "oauth_enhanced":
-            st.info(
-                "🎉 Analysis complete with enhanced OAuth access for detailed insights!"
-            )
-        else:
-            st.info("🎉 Analysis complete with public API access!")
-
-
 # ---------------------------------------------------------------------------
-# Main layout with tabs
+# App entry point – single page
 # ---------------------------------------------------------------------------
 
 
-TAB_ONBOARD, TAB_FRAMES = st.tabs(["Creator Onboarding", "Frame Analyzer"])
+def main():
+    st.set_page_config(page_title="YouTube Creator OAuth Manager", layout="wide")
+    tab_onboard, tab_audio, tab_video = st.tabs([
+        "Creator Onboarding",
+        "Audio Analyzer",
+        "Video Analyzer",
+    ])
 
-with TAB_ONBOARD:
-    onboarding_section()
+    with tab_onboard:
+        onboarding_section()
 
-with TAB_FRAMES:
-    frame_analyzer_section()
+    with tab_audio:
+        audio_analyzer_section()
+
+    with tab_video:
+        video_analyzer_section()
+
+
+if __name__ == "__main__":
+    main()

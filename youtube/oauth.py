@@ -18,6 +18,7 @@ from google.auth.transport.requests import Request  # type: ignore
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.readonly",
     "https://www.googleapis.com/auth/youtube.force-ssl",
+    "https://www.googleapis.com/auth/yt-analytics.readonly",
 ]
 
 from youtube.public import get_service as get_public_service  # re-export
