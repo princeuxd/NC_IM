@@ -1,14 +1,9 @@
-"""Global pipeline configuration for video analysis pipeline.
+"""Minimal configuration for the streamlined toolkit.
 
-This module centralizes tweakable parameters:
-• FRAME_INTERVAL_SEC – seconds between extracted frames for object detection.
-• PRODUCT_WINDOW_SEC – window (seconds) before/after a product appearance when correlating engagement metrics.
-• OBJECT_DETECTION_MODEL – multimodal/vision model route (OpenRouter or Groq) used for detecting objects/logos in frames.
-• SENTIMENT_MODEL – LLM route used for sentiment analysis of transcripts/comments.
-• SUMMARY_MODEL – LLM route used for executive summaries.
-• OPENROUTER_API_KEY / GROQ_API_KEY – credentials for chosen LLM provider.
-
-All settings can be overridden via environment variables (e.g. in a .env file) so deployments & the Streamlit UI can tweak behaviour without code edits.
+Only parameters that the current codebase still uses are kept.
+• FRAME_INTERVAL_SEC  – seconds between extracted frames in video analysis.
+• SENTIMENT_MODEL     – HuggingFace model id for sentiment scoring.
+• OPENROUTER_API_KEY / GROQ_API_KEY – optional creds for LLM providers (if ever re-enabled).
 """
 
 from __future__ import annotations
@@ -24,32 +19,27 @@ load_dotenv()
 
 @dataclass(frozen=True)
 class PipelineSettings:
-    """Immutable container for pipeline-wide parameters."""
+    """Immutable container for runtime parameters."""
 
-    # --- Frame / product timeline ------------------------------------------------
+    # --- Frame extraction ------------------------------------------------
     frame_interval_sec: int = int(os.getenv("FRAME_INTERVAL_SEC", "5"))
-    product_window_sec: int = int(os.getenv("PRODUCT_WINDOW_SEC", "120"))  # ± window
 
-    # --- Model routes ------------------------------------------------------------
-    # Free-tier routes (no credits required on OpenRouter)
-    # Vision – Nous Hermes 2 (7B) with multimodal capability, marked free
-    object_detection_model: str = os.getenv(
-        "OBJECT_DETECTION_MODEL", "meta-llama/llama-3.3-70b-instruct:free"
-    )
-
-    # Sentiment analysis – multilingual HF model (runs locally, no API)
+    # --- Sentiment model --------------------------------------------------
     sentiment_model: str = os.getenv(
         "SENTIMENT_MODEL", "nlptown/bert-base-multilingual-uncased-sentiment"
     )
 
-    # Summary model - now defaults to a vision-capable model for multimodal analysis
-    summary_model: str = os.getenv(
-        "SUMMARY_MODEL", "google/gemini-2.0-flash-exp:free"
-    )
-
-    # --- Provider credentials ----------------------------------------------------
+    # --- Optional LLM provider keys --------------------------------------
     openrouter_api_key: str | None = os.getenv("OPENROUTER_API_KEY")
     groq_api_key: str | None = os.getenv("GROQ_API_KEY")
+
+    # Default chat models (kept for future use)
+    openrouter_chat_model: str = os.getenv(
+        "OPENROUTER_CHAT_MODEL", "google/gemini-2.0-flash-exp:free"
+    )
+    groq_chat_model: str = os.getenv(
+        "GROQ_CHAT_MODEL", "mixtral-8x7b-32768"
+    )
 
 
 # Singleton used by most callers
@@ -57,20 +47,13 @@ SETTINGS = PipelineSettings()
 
 
 def update_from_kwargs(**overrides):  # type: ignore[override]
-    """Return a new PipelineSettings with selected fields overridden.
-
-    Helpful inside Streamlit callbacks to reflect UI sliders/inputs without
-    mutating the global immutable SETTINGS instance.
-    """
+    """Return a new PipelineSettings with supplied overrides."""
 
     return PipelineSettings(
         frame_interval_sec=overrides.get("frame_interval_sec", SETTINGS.frame_interval_sec),
-        product_window_sec=overrides.get("product_window_sec", SETTINGS.product_window_sec),
-        object_detection_model=overrides.get(
-            "object_detection_model", SETTINGS.object_detection_model
-        ),
         sentiment_model=overrides.get("sentiment_model", SETTINGS.sentiment_model),
-        summary_model=overrides.get("summary_model", SETTINGS.summary_model),
         openrouter_api_key=overrides.get("openrouter_api_key", SETTINGS.openrouter_api_key),
         groq_api_key=overrides.get("groq_api_key", SETTINGS.groq_api_key),
+        openrouter_chat_model=overrides.get("openrouter_chat_model", SETTINGS.openrouter_chat_model),
+        groq_chat_model=overrides.get("groq_chat_model", SETTINGS.groq_chat_model),
     ) 

@@ -1,0 +1,131 @@
+"""Audio transcription + sentiment helpers.
+
+This module offers a minimal public surface:
+
+transcribe()          – Whisper (or openai-whisper) segments
+attach_sentiment()    – enrich segments with polarity
+analyze_audio()       – convenience wrapper that writes JSON if needed
+
+It re-uses the battle-tested Whisper logic from *analysis.core* and the new
+`sentiment_scores` function so we avoid code duplication while still presenting
+one clear import path for audio work.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import certifi, os
+from pathlib import Path
+from typing import Any, List, Dict, cast, Sequence
+import shutil, subprocess
+
+# Local whisper helper (copied from old analysis.core)
+
+def _whisper_transcribe(audio_path: str | os.PathLike) -> List[Dict[str, Any]]:
+    """Transcribe *audio_path* with openai-whisper/whisper."""
+
+    try:
+        import whisper  # type: ignore
+        if not hasattr(whisper, "load_model"):
+            raise ImportError
+    except ImportError:
+        try:
+            import openai_whisper as whisper  # type: ignore
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("openai-whisper not installed") from exc
+
+    # ensure SSL certs for model download
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+
+    try:
+        model = whisper.load_model("base")  # type: ignore[attr-defined]
+        result = model.transcribe(str(audio_path), word_timestamps=False)
+        return cast(List[Dict[str, Any]], result.get("segments", []))
+    except Exception as exc:  # pragma: no cover
+        logging.getLogger(__name__).warning("Whisper transcription failed: %s", exc)
+        return []
+
+from analysis.sentiment import sentiment_scores
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Public helpers
+# ---------------------------------------------------------------------------
+
+def transcribe(audio_path: Path | str):
+    """Return list of Whisper segments for *audio_path*."""
+
+    return _whisper_transcribe(audio_path)
+
+
+def attach_sentiment(segments: Sequence[Dict[str, Any]]):
+    """Return new list where each segment includes a *sentiment* score."""
+
+    if not segments:
+        return []
+
+    texts = [s.get("text", "") for s in segments]
+    scores = sentiment_scores(texts)
+
+    enriched: List[Dict[str, Any]] = []
+    for seg, score in zip(segments, scores):
+        new_seg = dict(seg)
+        new_seg["sentiment"] = score
+        enriched.append(new_seg)
+    return enriched
+
+
+def analyze_audio(
+    audio_path: Path | str,
+    *,
+    out_path: Path | None = None,
+) -> List[Dict[str, Any]]:
+    """Transcribe *audio_path*, attach sentiment, optionally save JSON."""
+
+    segments = transcribe(audio_path)
+    enriched = attach_sentiment(segments)
+
+    if out_path is not None:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(enriched, indent=2, ensure_ascii=False))
+        logger.info("Saved transcript sentiment JSON → %s", out_path)
+
+    return enriched
+
+
+def extract_audio(video_file: Path | str, wav_path: Path | str | None = None) -> Path:
+    """Extract mono 16-kHz WAV audio using ffmpeg."""
+
+    video_file = Path(video_file)
+    if wav_path is None:
+        wav_path = video_file.with_suffix(".wav")
+    wav_path = Path(wav_path)
+
+    if shutil.which("ffmpeg") is None:
+        logger.warning("ffmpeg not in PATH; skipping audio extraction.")
+        return wav_path
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(video_file),
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        str(wav_path),
+    ]
+    logger.info("Extracting audio track to %s", wav_path)
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return wav_path
+
+
+__all__ = [
+    "transcribe",
+    "attach_sentiment",
+    "analyze_audio",
+] 

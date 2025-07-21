@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
 
 from google.oauth2.credentials import Credentials  # type: ignore
-from auth.youtube import get_oauth_service
+from youtube.oauth import get_service as get_oauth_service
 
 logger = logging.getLogger(__name__)
 
