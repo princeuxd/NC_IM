@@ -34,16 +34,17 @@ class PipelineSettings:
     # Free-tier routes (no credits required on OpenRouter)
     # Vision – Nous Hermes 2 (7B) with multimodal capability, marked free
     object_detection_model: str = os.getenv(
-        "OBJECT_DETECTION_MODEL", "nousresearch/nous-hermes-2-vision-7b:free"
+        "OBJECT_DETECTION_MODEL", "meta-llama/llama-3.3-70b-instruct:free"
     )
 
-    # Text sentiment – OpenHermes 2 (Mistral-7B) free variant
+    # Sentiment analysis – multilingual HF model (runs locally, no API)
     sentiment_model: str = os.getenv(
-        "SENTIMENT_MODEL", "teknium/openhermes-2-mistral-7b:free"
+        "SENTIMENT_MODEL", "nlptown/bert-base-multilingual-uncased-sentiment"
     )
 
+    # Summary model - now defaults to a vision-capable model for multimodal analysis
     summary_model: str = os.getenv(
-        "SUMMARY_MODEL", "google/gemma-3-27b-it:free"
+        "SUMMARY_MODEL", "google/gemini-2.0-flash-exp:free"
     )
 
     # --- Provider credentials ----------------------------------------------------

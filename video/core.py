@@ -242,57 +242,35 @@ def extract_frames(
     logger.info("Extracted %d frames to %s", len(result), out_dir)
     return result
 
-# ---------------------------------------------------------------------------
-# Orchestrator
-# ---------------------------------------------------------------------------
-
-def process_video(
-    url: str,
-    public_service: Resource,
+def fetch_and_save_video_metadata(
+    service: Resource,
+    video_id: str,
+    output_dir: Path,
     analytics_service: Optional[Resource] = None,
     channel_id: Optional[str] = None,
-    output_dir: Path | str = "data",
 ):
-    """High-level convenience wrapper:
+    """Fetch and save all video metadata and analytics."""
+    meta = fetch_video_metadata(service, video_id)
+    save_json(meta, output_dir / "metadata.json")
 
-    1. Resolve ID & fetch metadata (public).
-    2. Optionally fetch owner analytics (if analytics_service provided).
-    3. Download MP4 and extract WAV.
-    4. Persist everything under output_dir/{video_id}/ ...
-    """
-    output_dir = Path(output_dir)
-    vid = extract_video_id(url)
-    # Avoid double nesting if caller already specifies a directory named vid
-    if Path(output_dir).name == vid:
-        video_folder = Path(output_dir)
-    else:
-        video_folder = Path(output_dir) / vid
-    video_folder.mkdir(parents=True, exist_ok=True)
-
-    # 1. Metadata
-    meta = fetch_video_metadata(public_service, vid)
-    save_json(meta, video_folder / "metadata.json")
-
-    # 2. Analytics (if allowed)
     if analytics_service and channel_id:
         today = date.today()
+        # Fetch detailed audience retention data
         ana_rows = fetch_video_analytics(
-            analytics_service, vid, channel_id, start_date=today.replace(year=today.year - 1), end_date=today
-        )
-        save_json(ana_rows, video_folder / "analytics.json")
-
-        # Fetch additional aggregate metrics (views, likes, etc.)
-        summary_rows = fetch_video_metrics(
             analytics_service,
-            vid,
+            video_id,
             channel_id,
             start_date=today.replace(year=today.year - 1),
             end_date=today,
         )
-        save_json(summary_rows, video_folder / "metrics_summary.json")
+        save_json(ana_rows, output_dir / "analytics.json")
 
-    # 3. Download video + audio
-    mp4_path = download_video(url, output_dir=video_folder)
-    extract_audio(mp4_path, video_folder / "audio.wav")
-
-    logger.info("Finished processing %s", url) 
+        # Fetch summary metrics like views, likes, etc.
+        summary_rows = fetch_video_metrics(
+            analytics_service,
+            video_id,
+            channel_id,
+            start_date=today.replace(year=today.year - 1),
+            end_date=today,
+        )
+        save_json(summary_rows, output_dir / "metrics_summary.json") 

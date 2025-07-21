@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, List, cast, Dict
 
 import langdetect  # type: ignore
-from textblob import TextBlob  # type: ignore
+from analysis.sentiment_llm import sentiment_scores
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +59,9 @@ def transcribe_audio(audio_path: Path | str) -> List[dict[str, Any]]:
 
 def sentiment(text: str) -> float:
     """Return polarity score (-1 negative .. 1 positive)."""
-    tb = TextBlob(text)
-    return tb.sentiment.polarity  # type: ignore[attr-defined]
+    if not text.strip():
+        return 0.0
+    return sentiment_scores([text])[0]
 
 
 def analyze_transcript_sentiment(segments: List[dict[str, Any]]) -> List[dict[str, Any]]:

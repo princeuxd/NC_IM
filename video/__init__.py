@@ -12,10 +12,10 @@ def __getattr__(name: str) -> Any:  # noqa: D401
 
 __all__ = [
     "extract_video_id",
+    "fetch_and_save_video_metadata",
     "fetch_video_metadata",
     "fetch_video_analytics",
     "fetch_video_metrics",
-    "process_video",
     "download_video",
     "extract_audio",
     "extract_frames",

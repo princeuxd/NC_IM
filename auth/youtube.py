@@ -19,9 +19,12 @@ from googleapiclient.discovery import build  # type: ignore
 # - youtube.readonly → public & private YouTube Data API v3 access
 # - yt-analytics.readonly → channel-level analytics (audience retention, impressions, etc.)
 # Feel free to append additional scopes if you extend the pipeline.
+# Include force-ssl to allow comment and live chat read operations that fail with
+# only the readonly scope.
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.readonly",
     "https://www.googleapis.com/auth/yt-analytics.readonly",
+    "https://www.googleapis.com/auth/youtube.force-ssl",
 ]
 
 logger = logging.getLogger(__name__)
@@ -58,6 +61,13 @@ def get_oauth_service(client_secrets_file: Path, token_file: Path, scopes: list[
     scopes = scopes or SCOPES
 
     creds = _load_credentials(token_file)
+
+    # If the loaded credentials are present but do not contain **all** of the
+    # required scopes, we need to obtain fresh consent. The google-auth library
+    # stores granted scopes in ``creds.scopes``.
+    if creds and not set(SCOPES).issubset(set(creds.scopes or [])):
+        logger.info("Existing credentials missing required scopes – triggering OAuth flow for additional consent.")
+        creds = None
 
     if not creds:
         logger.info("No valid credentials found; starting OAuth flow.")
