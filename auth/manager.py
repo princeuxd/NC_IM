@@ -39,8 +39,28 @@ DEFAULT_CLIENT_SECRET = ROOT_DIR / "client_secret.json"
 # ---------------------------------------------------------------------------
 
 def list_token_files() -> List[Path]:
-    """Return a sorted list of credential JSON files for onboarded creators."""
-    return sorted(TOKENS_DIR.glob("*.json"))
+    """Return a sorted list of credential JSON files for onboarded creators.
+
+    We exclude files that are not authorised-user credential JSONs (e.g. raw
+    `client_secret.json` files uploaded by mistake) by ensuring the JSON
+    payload includes a ``refresh_token`` key.
+    """
+
+    candidate_files = sorted(TOKENS_DIR.glob("*.json"))
+    valid_files: List[Path] = []
+
+    for path in candidate_files:
+        try:
+            data = json.loads(path.read_text())
+            # An authorised-user credential always contains these fields
+            if "refresh_token" in data and "client_id" in data:
+                valid_files.append(path)
+        except Exception:
+            # Skip unreadable or malformed JSON files silently – they will be
+            # surfaced later if needed during individual credential loading.
+            continue
+
+    return valid_files
 
 
 def validate_client_secret(client_secret_path: Path) -> Dict[str, Any]:

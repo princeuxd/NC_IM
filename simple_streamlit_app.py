@@ -1170,7 +1170,7 @@ def onboarding_section():
 
         # Determine client secret path and validate
         if uploaded_cs is not None:
-            tmp_cs_path = TOKENS_DIR / "uploaded_client_secret.json"
+            tmp_cs_path = ROOT / "uploaded_client_secret.json"  # store outside tokens to avoid being treated as a credential file
             tmp_cs_path.write_bytes(uploaded_cs.read())
             client_secret_path = tmp_cs_path
         else:
