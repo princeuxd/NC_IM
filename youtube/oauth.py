@@ -13,6 +13,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore
 from googleapiclient.discovery import build  # type: ignore
 from google.oauth2.credentials import Credentials  # type: ignore
 from google.auth.transport.requests import Request  # type: ignore
+import sys
 
 # Minimal scopes required for read operations and comments
 SCOPES = [
@@ -47,15 +48,63 @@ def get_service(client_secrets_file: Path | str, token_file: Path | str, *, scop
 
     creds = _load_credentials(token_file)
 
+    # ------------------------------------------------------------------
+    # Perform OAuth flow if no valid credentials are cached
+    # ------------------------------------------------------------------
     if not creds:
         use_scopes = scopes or SCOPES
-        flow = InstalledAppFlow.from_client_secrets_file(str(client_secrets_file), use_scopes)
+        flow = InstalledAppFlow.from_client_secrets_file(
+            str(client_secrets_file), use_scopes
+        )
 
-        if hasattr(flow, "run_console"):
-            creds = flow.run_console()  # type: ignore[attr-defined]
+        is_streamlit = "streamlit" in sys.modules
+
+        if is_streamlit:
+            # ---------------- Streamlit copy-and-paste flow -------------
+            # Import Streamlit lazily to avoid hard dependency when running
+            # this function in non-Streamlit contexts (e.g. CLI scripts).
+            import streamlit as st  # type: ignore
+
+            # Use the legacy out-of-band flow by explicitly setting the
+            # redirect URI on the flow object (mirrors what run_console()
+            # does internally).
+            flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
+
+            auth_url, _ = flow.authorization_url(
+                prompt="consent",
+                access_type="offline",
+                include_granted_scopes="true",
+            )
+
+            st.markdown(
+                "### 🔐 Google authorisation required\n"
+                "1. Click the link below and complete the consent screen.\n"
+                "2. Google will show you a **verification code** – copy it.\n"
+                "3. Paste the code in the box and press Enter."
+            )
+            st.markdown(
+                f"[Open consent page →]({auth_url})",
+                unsafe_allow_html=True,
+            )
+
+            code = st.text_input("Paste verification code:")
+            if not code:
+                # Stop execution until the user supplies the code; Streamlit
+                # reruns the script automatically on each input change.
+                st.stop()
+
+            # Exchange code for tokens
+            flow.fetch_token(code=code.strip())
+            creds = flow.credentials
         else:
-            # Older google-auth-oauthlib versions only support run_local_server
-            creds = flow.run_local_server(port=0)
+            # ---------------- Console / local-server fallback ------------
+            if hasattr(flow, "run_console"):
+                creds = flow.run_console()  # type: ignore[attr-defined]
+            else:
+                # Older google-auth-oauthlib versions only support local server
+                creds = flow.run_local_server(port=0)
+
+        # Persist newly obtained credentials for future sessions
         token_file.write_text(creds.to_json())
 
     return build("youtube", "v3", credentials=creds) 

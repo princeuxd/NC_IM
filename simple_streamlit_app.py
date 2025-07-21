@@ -1220,6 +1220,10 @@ File: {client_secret_path}
                 help="Opens Google OAuth consent screen in a new tab",
             )
 
+        # Persist onboarding state between reruns so the flow continues
+        if oauth_btn and not st.session_state.get("oauth_flow_active"):
+            st.session_state["oauth_flow_active"] = True
+
         with col_info:
             st.info(
                 """
@@ -1231,7 +1235,7 @@ File: {client_secret_path}
             """
             )
 
-        if oauth_btn:
+        if st.session_state.get("oauth_flow_active"):
             with st.spinner(
                 "🔄 Initiating OAuth flow... Please complete authentication in the new browser tab."
             ):
@@ -1271,6 +1275,9 @@ File: {client_secret_path}
                     """
                     )
 
+                    # Flow complete – clear flag
+                    st.session_state.pop("oauth_flow_active", None)
+
                     # Auto-switch to creators tab
                     st.info(
                         "💡 Switch to the 'Manage Creators' tab to see your new creator account!"
@@ -1295,6 +1302,9 @@ File: {client_secret_path}
                         st.code(
                             f"Error Type: {type(exc).__name__}\nError Message: {str(exc)}"
                         )
+
+                    # Clear flag on error to allow retry
+                    st.session_state.pop("oauth_flow_active", None)
 
 
 # ---------------------------------------------------------------------------
