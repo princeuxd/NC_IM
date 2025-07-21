@@ -11,3 +11,4 @@ transformers>=4.40.0
 streamlit
 openai
 isodate
+ffmpeg-python
