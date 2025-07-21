@@ -282,8 +282,14 @@ def audio_analyzer_section():
                 )
             except Exception as e:
                 # Fallback to Groq if key present
-                if SETTINGS.groq_api_key:
-                    g_client = get_client("groq", SETTINGS.groq_api_key)
+                # Fresh reload of environment to avoid Streamlit caching issues
+                import os
+                from dotenv import load_dotenv
+                load_dotenv(override=True)
+                fresh_groq_key = os.getenv("GROQ_API_KEY")
+                
+                if fresh_groq_key:
+                    g_client = get_client("groq", fresh_groq_key)
                     summary = g_client.chat(
                         [
                             {"role": "system", "content": prompt_msg},

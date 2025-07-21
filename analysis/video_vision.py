@@ -81,7 +81,13 @@ def summarise_frames(
         return reply
     except Exception as e:
         # If we hit rate-limit or any OpenRouter specific error, fall back to Groq if key configured.
-        if SETTINGS.groq_api_key:
+        # Fresh reload of environment to avoid Streamlit caching issues
+        import os
+        from dotenv import load_dotenv
+        load_dotenv(override=True)
+        fresh_groq_key = os.getenv("GROQ_API_KEY")
+        
+        if fresh_groq_key:
             logger.warning("OpenRouter failed (%s). Falling back to Groq vision model…", e)
 
             # Groq multimodal limit: 5 images → rebuild content with first 5 imgs
@@ -92,7 +98,7 @@ def summarise_frames(
             for ib, tb in list(zip(img_blocks, txt_blocks))[:5]:
                 g_content.extend([ib, tb])
 
-            g_client = get_client("groq", SETTINGS.groq_api_key)
+            g_client = get_client("groq", fresh_groq_key)
             return g_client.chat(
                 [{"role": "user", "content": g_content}],
                 model="meta-llama/llama-4-scout-17b-16e-instruct",
