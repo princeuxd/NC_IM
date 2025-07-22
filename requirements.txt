@@ -14,3 +14,4 @@ openai
 isodate
 ffmpeg-python
 imageio-ffmpeg
+google-generativeai>=0.8.0

@@ -22,7 +22,7 @@ class LLMClient(ABC):
 # ---------------------------------------------------------------------------
 
 def get_client(provider: str, api_key: str | None = None) -> "LLMClient":
-    """Return an LLMClient for *provider* ('openrouter' or 'groq')."""
+    """Return an LLMClient for *provider* ('openrouter', 'groq', or 'gemini')."""
 
     provider = provider.lower().strip()
     if provider == "openrouter":
@@ -33,5 +33,27 @@ def get_client(provider: str, api_key: str | None = None) -> "LLMClient":
         from .groq import GroqClient
 
         return GroqClient(api_key=api_key)
+    if provider == "gemini":
+        from .gemini import GeminiClient
 
-    raise ValueError(f"Unknown LLM provider: {provider}") 
+        return GeminiClient(api_key=api_key)
+
+    raise ValueError(f"Unknown LLM provider: {provider}")
+
+
+def get_smart_client() -> "LLMClient":
+    """Get an LLM client with automatic key rotation and provider fallback.
+    
+    This is the recommended way to get an LLM client as it handles:
+    - Automatic key rotation when rate limits are hit
+    - Fallback between providers: OpenRouter → Groq → Gemini
+    - Error handling and retry logic
+    
+    Returns:
+        LLMClient: A client instance that automatically handles failures
+    
+    Raises:
+        RuntimeError: If all keys are exhausted
+    """
+    from .smart_client import SmartLLMClient
+    return SmartLLMClient() 

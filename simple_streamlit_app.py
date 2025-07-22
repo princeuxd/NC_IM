@@ -264,12 +264,16 @@ def audio_analyzer_section():
         # Combine transcript text (simple concatenation)
         full_text = "\n".join(s.get("text", "") for s in segments)
 
-        if not SETTINGS.openrouter_api_key:
-            st.warning("OpenRouter API key not configured – cannot generate summary.")
+        # Check if any LLM provider keys are available
+        if not (SETTINGS.openrouter_api_keys or SETTINGS.groq_api_keys or SETTINGS.gemini_api_keys):
+            st.warning("No LLM API keys configured – cannot generate summary.")
+            st.info("Configure `OPENROUTER_API_KEY`, `GROQ_API_KEY`, or `GEMINI_API_KEY` environment variables")
             return
 
         with st.spinner("Generating summary via LLM …"):
-            client = get_client("openrouter", SETTINGS.openrouter_api_key)
+            from llms import get_smart_client
+            
+            client = get_smart_client()
             prompt_msg = (
                 "You are a podcast/video-transcript analyst. Based on the raw transcript, "
                 "return a concise markdown report with the following sections:\n\n"
@@ -285,31 +289,12 @@ def audio_analyzer_section():
                         {"role": "system", "content": prompt_msg},
                         {"role": "user", "content": full_text[:12000]},
                     ],
-                    model=SETTINGS.openrouter_chat_model,
                     temperature=0.3,
                     max_tokens=512,
                 )
             except Exception as e:
-                # Fallback to Groq if key present
-                # Fresh reload of environment to avoid Streamlit caching issues
-                import os
-                from dotenv import load_dotenv
-                load_dotenv(override=True)
-                fresh_groq_key = os.getenv("GROQ_API_KEY")
-                
-                if fresh_groq_key:
-                    g_client = get_client("groq", fresh_groq_key)
-                    summary = g_client.chat(
-                        [
-                            {"role": "system", "content": prompt_msg},
-                            {"role": "user", "content": full_text[:12000]},
-                        ],
-                        temperature=0.3,
-                        max_tokens=512,
-                    )
-                else:
-                    st.error(f"LLM call failed: {e}")
-                    return
+                st.error(f"All LLM providers failed: {e}")
+                return
 
         st.subheader("📝 Video Summary")
         st.markdown(summary)
@@ -341,8 +326,10 @@ def video_analyzer_section():
     max_frames = st.slider("Max frames to send", 4, 16, 8)
 
     if st.button("Summarise Video", key="run_video"):
-        if not SETTINGS.openrouter_api_key:
-            st.error("OPENROUTER_API_KEY not configured in environment.")
+        # Check if any LLM provider keys are available
+        if not (SETTINGS.openrouter_api_keys or SETTINGS.groq_api_keys or SETTINGS.gemini_api_keys):
+            st.error("No LLM API keys configured in environment.")
+            st.info("Configure `OPENROUTER_API_KEY`, `GROQ_API_KEY`, or `GEMINI_API_KEY` environment variables")
             return
 
         if not url.strip():
@@ -3003,22 +2990,17 @@ def analyze_comments_with_llm(comments):
     """Analyze comments using LLM for sentiment and themes."""
     
     # Check if LLM is available
-    if not (SETTINGS.openrouter_api_key or groq_key):
+    if not (SETTINGS.openrouter_api_keys or SETTINGS.groq_api_keys or SETTINGS.gemini_api_keys):
         st.error("❌ **LLM API key required**")
-        st.info("Set `OPENROUTER_API_KEY` or `GROQ_API_KEY` environment variable")
+        st.info("Set `OPENROUTER_API_KEY`, `GROQ_API_KEY`, or `GEMINI_API_KEY` environment variable")
         return None
 
-    # Get LLM client
-    client = None
-    if SETTINGS.openrouter_api_key:
-        client = get_client("openrouter", SETTINGS.openrouter_api_key)
-        model = SETTINGS.openrouter_chat_model
-    elif groq_key:
-        client = get_client("groq", groq_key)
-        model = "llama3-8b-8192"
-    
-    if not client:
-        st.error("Failed to initialize LLM client")
+    # Get smart LLM client with automatic fallback
+    from llms import get_smart_client
+    try:
+        client = get_smart_client()
+    except Exception as e:
+        st.error(f"Failed to initialize LLM client: {e}")
         return None
 
     # Prepare comments for analysis - use all comments but optimize for token limits
@@ -3078,7 +3060,6 @@ Keep it concise but thorough. Focus on actionable insights for the creator.
                 {"role": "system", "content": "You are an expert at analyzing social media engagement and audience sentiment. Focus on providing actionable insights for content creators."},
                 {"role": "user", "content": prompt}
             ],
-            model=model,
             temperature=0.3,
             max_tokens=1000,
         )
@@ -3091,39 +3072,8 @@ Keep it concise but thorough. Focus on actionable insights for the creator.
         }
         
     except Exception as e:
-        # Fallback to Groq if OpenRouter fails (rate limits, etc.)
-        # Fresh reload of environment to avoid Streamlit caching issues
-        import os
-        from dotenv import load_dotenv
-        load_dotenv(override=True)
-        fresh_groq_key = os.getenv("GROQ_API_KEY")
-        
-        if fresh_groq_key and ("rate" in str(e).lower() or "429" in str(e) or "openrouter" in str(e).lower()):
-            st.warning("OpenRouter rate limited, falling back to Groq...")
-            try:
-                g_client = get_client("groq", fresh_groq_key)
-                response = g_client.chat(
-                    [
-                        {"role": "system", "content": "You are an expert at analyzing social media engagement and audience sentiment. Focus on providing actionable insights for content creators."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.3,
-                    max_tokens=1000,
-                )
-                
-                return {
-                    "summary": response,
-                    "comments": comments,
-                    "total_analyzed": len(comments_to_analyze),
-                    "total_comments": total_comments
-                }
-                
-            except Exception as e2:
-                st.error(f"Both OpenRouter and Groq failed: {e2}")
-                return None
-        else:
-            st.error(f"Analysis failed: {e}")
-            return None
+        st.error(f"LLM analysis failed: {e}")
+        return None
 
 
 def display_simple_comment_analysis(analysis_results, video_id):
@@ -3250,21 +3200,16 @@ def calculate_creator_authenticity(comments, analysis_results):
         return {"score": 0, "breakdown": {}, "insights": []}
     
     # Check if LLM is available
-    if not (SETTINGS.openrouter_api_key or groq_key):
+    if not (SETTINGS.openrouter_api_keys or SETTINGS.groq_api_keys or SETTINGS.gemini_api_keys):
         st.warning("⚠️ **LLM required for authenticity analysis** - Set API keys to enable")
         return {"score": 0, "breakdown": {}, "insights": ["LLM API key required"]}
 
-    # Get LLM client
-    client = None
-    if SETTINGS.openrouter_api_key:
-        client = get_client("openrouter", SETTINGS.openrouter_api_key)
-        model = SETTINGS.openrouter_chat_model
-    elif groq_key:
-        client = get_client("groq", groq_key)
-        model = "llama3-8b-8192"
-    
-    if not client:
-        return {"score": 0, "breakdown": {}, "insights": ["Failed to initialize LLM client"]}
+    # Get smart LLM client with automatic fallback
+    from llms import get_smart_client
+    try:
+        client = get_smart_client()
+    except Exception as e:
+        return {"score": 0, "breakdown": {}, "insights": [f"Failed to initialize LLM client: {e}"]}
 
     # Prepare data for LLM analysis
     total_comments = len(comments)
@@ -3340,12 +3285,11 @@ INSIGHTS: [3-5 specific observations about authenticity patterns]
                 {"role": "system", "content": "You are an expert at detecting authentic vs fake social media engagement. Analyze comment patterns to assess creator authenticity."},
                 {"role": "user", "content": prompt}
             ],
-            model=model,
             temperature=0.2,
             max_tokens=800,
         )
         
-        # Parse LLM response
+        # Parse LLM response (handle both plain and markdown formats)
         score = 0
         comment_quality = 0
         audience_loyalty = 0
@@ -3353,17 +3297,45 @@ INSIGHTS: [3-5 specific observations about authenticity patterns]
         insights = []
         
         for line in response.strip().split('\n'):
-            if line.startswith('AUTHENTICITY_SCORE:'):
-                score = float(line.split(':')[1].strip())
-            elif line.startswith('COMMENT_QUALITY:'):
-                comment_quality = float(line.split(':')[1].strip())
-            elif line.startswith('AUDIENCE_LOYALTY:'):
-                audience_loyalty = float(line.split(':')[1].strip())
-            elif line.startswith('LEVEL:'):
-                level = line.split(':')[1].strip()
-            elif line.startswith('INSIGHTS:'):
-                insights_text = line.split(':', 1)[1].strip()
-                insights = [insight.strip() for insight in insights_text.split(';') if insight.strip()]
+            # Clean line of markdown formatting
+            clean_line = line.strip().replace('**', '').replace('*', '')
+            
+            if 'AUTHENTICITY_SCORE:' in clean_line:
+                try:
+                    score = float(clean_line.split(':')[1].strip())
+                except (ValueError, IndexError):
+                    pass
+            elif 'COMMENT_QUALITY:' in clean_line:
+                try:
+                    comment_quality = float(clean_line.split(':')[1].strip())
+                except (ValueError, IndexError):
+                    pass
+            elif 'AUDIENCE_LOYALTY:' in clean_line:
+                try:
+                    audience_loyalty = float(clean_line.split(':')[1].strip())
+                except (ValueError, IndexError):
+                    pass
+            elif 'LEVEL:' in clean_line:
+                try:
+                    level = clean_line.split(':')[1].strip()
+                except IndexError:
+                    pass
+            elif 'INSIGHTS:' in clean_line:
+                # For insights, collect numbered points from subsequent lines
+                insights_text = clean_line.split(':', 1)[1].strip()
+                if insights_text:
+                    insights = [insight.strip() for insight in insights_text.split(';') if insight.strip()]
+        
+        # If no insights were found in the main line, try to extract from numbered points
+        if not insights:
+            insights = []
+            for line in response.strip().split('\n'):
+                clean_line = line.strip()
+                # Look for numbered insights (1. 2. 3. etc.)
+                if clean_line and (clean_line.startswith(('1.', '2.', '3.', '4.', '5.'))):
+                    insight_text = clean_line[2:].strip()  # Remove "1. " etc.
+                    if insight_text and len(insight_text) > 10:  # Only meaningful insights
+                        insights.append(insight_text)
         
         # Set level emoji
         level_emoji = "🌟" if "Highly" in level else "✅" if level == "Authentic" else "⚠️" if "Moderately" in level else "🔴"
@@ -3386,70 +3358,8 @@ INSIGHTS: [3-5 specific observations about authenticity patterns]
         }
         
     except Exception as e:
-        # Fallback to Groq if OpenRouter fails
-        import os
-        from dotenv import load_dotenv
-        load_dotenv(override=True)
-        fresh_groq_key = os.getenv("GROQ_API_KEY")
-        
-        if fresh_groq_key and ("rate" in str(e).lower() or "429" in str(e) or "openrouter" in str(e).lower()):
-            st.warning("OpenRouter rate limited, falling back to Groq for authenticity analysis...")
-            try:
-                g_client = get_client("groq", fresh_groq_key)
-                response = g_client.chat(
-                    [
-                        {"role": "system", "content": "You are an expert at detecting authentic vs fake social media engagement. Analyze comment patterns to assess creator authenticity."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.2,
-                    max_tokens=800,
-                )
-                
-                # Parse response (same logic as above)
-                score = 0
-                comment_quality = 0
-                audience_loyalty = 0
-                level = "Unknown"
-                insights = []
-                
-                for line in response.strip().split('\n'):
-                    if line.startswith('AUTHENTICITY_SCORE:'):
-                        score = float(line.split(':')[1].strip())
-                    elif line.startswith('COMMENT_QUALITY:'):
-                        comment_quality = float(line.split(':')[1].strip())
-                    elif line.startswith('AUDIENCE_LOYALTY:'):
-                        audience_loyalty = float(line.split(':')[1].strip())
-                    elif line.startswith('LEVEL:'):
-                        level = line.split(':')[1].strip()
-                    elif line.startswith('INSIGHTS:'):
-                        insights_text = line.split(':', 1)[1].strip()
-                        insights = [insight.strip() for insight in insights_text.split(';') if insight.strip()]
-                
-                level_emoji = "🌟" if "Highly" in level else "✅" if level == "Authentic" else "⚠️" if "Moderately" in level else "🔴"
-                
-                return {
-                    "score": round(score, 1),
-                    "level": level,
-                    "level_emoji": level_emoji,
-                    "breakdown": {
-                        "Comment Quality": round(comment_quality, 1),
-                        "Audience Loyalty": round(audience_loyalty, 1)
-                    },
-                    "insights": insights,
-                    "metrics": {
-                        "total_comments": total_comments,
-                        "avg_comment_length": round(avg_comment_length, 1),
-                        "total_engagement": total_likes,
-                        "comments_with_replies": comments_with_replies
-                    }
-                }
-                
-            except Exception as e2:
-                st.error(f"Both OpenRouter and Groq failed for authenticity analysis: {e2}")
-                return {"score": 0, "breakdown": {}, "insights": ["Analysis failed"]}
-        else:
-            st.error(f"Authenticity analysis failed: {e}")
-            return {"score": 0, "breakdown": {}, "insights": ["Analysis failed"]}
+        st.error(f"Authenticity analysis failed: {e}")
+        return {"score": 0, "breakdown": {}, "insights": [f"Analysis failed: {e}"]}
 
 
 def display_authenticity_score(authenticity_data):

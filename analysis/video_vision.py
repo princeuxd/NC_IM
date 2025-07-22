@@ -32,8 +32,9 @@ def summarise_frames(
 ) -> str:
     """Send up to 16 frames to an OpenRouter vision model and return its reply."""
 
-    if not SETTINGS.openrouter_api_key:
-        raise RuntimeError("OPENROUTER_API_KEY not configured.")
+    # Check if any LLM provider keys are available
+    if not (SETTINGS.openrouter_api_keys or SETTINGS.groq_api_keys or SETTINGS.gemini_api_keys):
+        raise RuntimeError("No LLM API keys configured. Set OPENROUTER_API_KEY, GROQ_API_KEY, or GEMINI_API_KEY.")
 
     if not frames:
         return "No frames supplied."
@@ -69,42 +70,19 @@ def summarise_frames(
         )
         content.append({"type": "text", "text": f"Timestamp: {ts:.1f}s"})
 
-    client = get_client("openrouter", SETTINGS.openrouter_api_key)
-
+    # Use smart client for automatic key rotation and provider fallback
+    from llms import get_smart_client
+    
     try:
+        client = get_smart_client()
         reply = client.chat(
             [{"role": "user", "content": content}],
-            model=model,
             temperature=0.2,
             max_tokens=256,
         )
         return reply
     except Exception as e:
-        # If we hit rate-limit or any OpenRouter specific error, fall back to Groq if key configured.
-        # Fresh reload of environment to avoid Streamlit caching issues
-        import os
-        from dotenv import load_dotenv
-        load_dotenv(override=True)
-        fresh_groq_key = os.getenv("GROQ_API_KEY")
-        
-        if fresh_groq_key:
-            logger.warning("OpenRouter failed (%s). Falling back to Groq vision model…", e)
-
-            # Groq multimodal limit: 5 images → rebuild content with first 5 imgs
-            g_content = [content[0]]  # prompt text
-            img_blocks = [blk for blk in content[1:] if blk.get("type") == "image_url"]
-            txt_blocks = [blk for blk in content[1:] if blk.get("type") == "text"]
-
-            for ib, tb in list(zip(img_blocks, txt_blocks))[:5]:
-                g_content.extend([ib, tb])
-
-            g_client = get_client("groq", fresh_groq_key)
-            return g_client.chat(
-                [{"role": "user", "content": g_content}],
-                model="meta-llama/llama-4-scout-17b-16e-instruct",
-                temperature=0.2,
-                max_tokens=256,
-            )
+        logger.error("Vision analysis failed with all providers: %s", e)
         raise
 
 
