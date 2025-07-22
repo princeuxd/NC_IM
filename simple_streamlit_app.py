@@ -314,8 +314,6 @@ def audio_analyzer_section():
 
 
 # Video Analyzer section (frame → vision LLM summary)
-
-
 def video_analyzer_section():
     st.title("🖼️ Video Frame Analyzer")
 
@@ -607,6 +605,30 @@ def get_enhanced_analytics(service_info, video_id, days_back=30):
         return None
 
     try:
+        from youtube.analytics import get_comprehensive_video_analytics
+        
+        analytics_service = service_info["analytics_service"]
+        channel_id = service_info["channel_id"]
+
+        # Get comprehensive video analytics using the dedicated function
+        comprehensive_data = get_comprehensive_video_analytics(
+            analytics_service, video_id, channel_id, days_back=days_back
+        )
+        
+        return comprehensive_data
+
+    except Exception as e:
+        logger.warning(f"Enhanced analytics failed: {e}")
+        return None
+
+
+def get_legacy_enhanced_analytics(service_info, video_id, days_back=30):
+    """Fallback method for enhanced analytics (legacy implementation)."""
+    # Only get analytics if we own the video and have analytics access
+    if not service_info["video_owned"] or not service_info["analytics_service"]:
+        return None
+
+    try:
         from datetime import date, timedelta
 
         end_date = date.today()
@@ -721,14 +743,642 @@ def get_enhanced_analytics(service_info, video_id, days_back=30):
 
 
 def display_enhanced_analytics(analytics_data, video_title):
-    """Display enhanced analytics data in a beautiful format."""
+    """Display comprehensive enhanced analytics data in a beautiful format."""
+    if not analytics_data:
+        return
+
+    st.subheader("📊 Comprehensive Video Analytics (OAuth)")
+    
+    # Create tabs for different analytics sections
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        "📈 Overview", "📊 Audience Retention", "🌍 Demographics", 
+        "🗺️ Geography", "💰 Monetization", "📅 Time Series", "🚀 Engagement"
+    ])
+    
+    with tab1:
+        display_overview_metrics(analytics_data)
+    
+    with tab2:
+        display_audience_retention(analytics_data)
+    
+    with tab3:
+        display_demographics_analytics(analytics_data)
+    
+    with tab4:
+        display_geography_analytics(analytics_data)
+    
+    with tab5:
+        display_monetization_analytics(analytics_data)
+    
+    with tab6:
+        display_time_series_analytics(analytics_data)
+    
+    with tab7:
+        display_engagement_analytics(analytics_data)
+
+
+def display_overview_metrics(analytics_data):
+    """Display overview metrics and key performance indicators."""
+    
+    # Summary metrics
+    summary_data = analytics_data.get("summary_metrics", {})
+    engagement_data = analytics_data.get("engagement_metrics", {})
+    impressions_data = analytics_data.get("impressions", {})
+    
+    if summary_data.get("rows"):
+        row = summary_data["rows"][0]
+        
+        st.markdown("### 🎯 Key Performance Metrics")
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        with col1:
+            views = int(row[1]) if len(row) > 1 else 0
+            st.metric("👀 Views", f"{views:,}")
+        with col2:
+            watch_time = int(row[2]) if len(row) > 2 else 0
+            st.metric("⏱️ Watch Time", f"{watch_time:,} min")
+        with col3:
+            avg_duration = int(row[3]) if len(row) > 3 else 0
+            st.metric("🎯 Avg Duration", f"{avg_duration:,} sec")
+        with col4:
+            likes = int(row[4]) if len(row) > 4 else 0
+            st.metric("👍 Likes", f"{likes:,}")
+        with col5:
+            comments = int(row[5]) if len(row) > 5 else 0
+            st.metric("💬 Comments", f"{comments:,}")
+    
+    # Enhanced engagement metrics
+    if engagement_data.get("rows"):
+        eng_row = engagement_data["rows"][0]
+        st.markdown("### 📊 Engagement Breakdown")
+        
+        col1, col2, col3, col4, col5, col6 = st.columns(6)
+        
+        with col1:
+            shares = int(eng_row[4]) if len(eng_row) > 4 else 0
+            st.metric("🔄 Shares", f"{shares:,}")
+        with col2:
+            subs_gained = int(eng_row[5]) if len(eng_row) > 5 else 0
+            st.metric("🔔 Subs Gained", f"+{subs_gained:,}")
+        with col3:
+            playlist_adds = int(eng_row[7]) if len(eng_row) > 7 else 0
+            st.metric("📋 Playlist Adds", f"{playlist_adds:,}")
+        with col4:
+            saves = int(eng_row[8]) if len(eng_row) > 8 else 0
+            st.metric("💾 Saves", f"{saves:,}")
+        with col5:
+            # Calculate engagement rate
+            total_views = int(eng_row[0]) if len(eng_row) > 0 else 0
+            total_likes = int(eng_row[1]) if len(eng_row) > 1 else 0
+            total_comments = int(eng_row[3]) if len(eng_row) > 3 else 0
+            
+            if total_views > 0:
+                engagement_rate = ((total_likes + total_comments + shares) / total_views) * 100
+                st.metric("📈 Engagement Rate", f"{engagement_rate:.2f}%")
+            else:
+                st.metric("📈 Engagement Rate", "0.00%")
+        with col6:
+            # Like to view ratio
+            if total_views > 0:
+                like_ratio = (total_likes / total_views) * 100
+                st.metric("👍 Like Rate", f"{like_ratio:.2f}%")
+            else:
+                st.metric("👍 Like Rate", "0.00%")
+    
+    # Impressions data
+    if impressions_data.get("rows") and not impressions_data.get("error"):
+        imp_row = impressions_data["rows"][0]
+        st.markdown("### 👁️ Impressions & Discovery")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            impressions = int(imp_row[0]) if len(imp_row) > 0 else 0
+            st.metric("👁️ Impressions", f"{impressions:,}")
+        with col2:
+            ctr = float(imp_row[1]) if len(imp_row) > 1 else 0
+            st.metric("🎯 Click-through Rate", f"{ctr:.2f}%")
+        with col3:
+            unique_viewers = int(imp_row[2]) if len(imp_row) > 2 else 0
+            st.metric("👤 Unique Viewers", f"{unique_viewers:,}")
+
+
+def display_audience_retention(analytics_data):
+    """Display audience retention analytics with interactive charts."""
+    
+    retention_data = analytics_data.get("audience_retention", [])
+    
+    if retention_data and not isinstance(retention_data, dict):
+        st.markdown("### 📊 Audience Retention Curve")
+        
+        # Convert retention data to chart format
+        import pandas as pd
+        
+        if retention_data:
+            time_points = []
+            retention_rates = []
+            
+            for row in retention_data:
+                if len(row) >= 2:
+                    time_points.append(float(row[0]) * 100)  # Convert to percentage
+                    retention_rates.append(float(row[1]) * 100)  # Convert to percentage
+            
+            if time_points and retention_rates:
+                df = pd.DataFrame({
+                    'Video Progress (%)': time_points,
+                    'Audience Retention (%)': retention_rates
+                })
+                
+                st.line_chart(df.set_index('Video Progress (%)'))
+                
+                # Key insights
+                st.markdown("### 🔍 Retention Insights")
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    avg_retention = sum(retention_rates) / len(retention_rates)
+                    st.metric("📊 Average Retention", f"{avg_retention:.1f}%")
+                
+                with col2:
+                    max_retention = max(retention_rates)
+                    max_point = time_points[retention_rates.index(max_retention)]
+                    st.metric("🎯 Peak Retention", f"{max_retention:.1f}% at {max_point:.0f}%")
+                
+                with col3:
+                    min_retention = min(retention_rates)
+                    min_point = time_points[retention_rates.index(min_retention)]
+                    st.metric("📉 Lowest Retention", f"{min_retention:.1f}% at {min_point:.0f}%")
+                
+                # Identify key moments
+                st.markdown("### 🎬 Key Moments Analysis")
+                
+                # Find spikes (increases)
+                spikes = []
+                dips = []
+                
+                for i in range(1, len(retention_rates)):
+                    change = retention_rates[i] - retention_rates[i-1]
+                    if change > 5:  # Significant spike
+                        spikes.append((time_points[i], retention_rates[i], change))
+                    elif change < -5:  # Significant dip
+                        dips.append((time_points[i], retention_rates[i], abs(change)))
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if spikes:
+                        st.markdown("**📈 Retention Spikes (Rewatched/Shared moments):**")
+                        for time_point, retention, change in spikes[:3]:
+                            st.write(f"• {time_point:.0f}% mark: +{change:.1f}% retention boost")
+                    else:
+                        st.info("No significant retention spikes detected")
+                
+                with col2:
+                    if dips:
+                        st.markdown("**📉 Retention Dips (Drop-off points):**")
+                        for time_point, retention, change in dips[:3]:
+                            st.write(f"• {time_point:.0f}% mark: -{change:.1f}% drop")
+                    else:
+                        st.info("No significant retention dips detected")
+        else:
+            st.info("No retention data available for the selected period")
+    else:
+        st.info("Audience retention data not available - requires video ownership and sufficient views (100+ views)")
+
+
+def display_demographics_analytics(analytics_data):
+    """Display demographic breakdown of the audience."""
+    
+    demographics_data = analytics_data.get("demographics", [])
+    
+    if demographics_data and not isinstance(demographics_data, dict):
+        st.markdown("### 👥 Audience Demographics")
+        
+        import pandas as pd
+        
+        # Process demographics data
+        age_gender_data = []
+        
+        for row in demographics_data:
+            if len(row) >= 3:
+                age_group = row[0]
+                gender = row[1]
+                percentage = float(row[2])
+                age_gender_data.append({
+                    'Age Group': age_group,
+                    'Gender': gender,
+                    'Percentage': percentage
+                })
+        
+        if age_gender_data:
+            df = pd.DataFrame(age_gender_data)
+            
+            # Age distribution
+            age_totals = df.groupby('Age Group')['Percentage'].sum().reset_index()
+            age_totals = age_totals.sort_values('Percentage', ascending=False)
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**📊 Age Distribution**")
+                st.bar_chart(age_totals.set_index('Age Group'))
+            
+            with col2:
+                st.markdown("**⚧ Gender Distribution**")
+                gender_totals = df.groupby('Gender')['Percentage'].sum().reset_index()
+                st.bar_chart(gender_totals.set_index('Gender'))
+            
+            # Top demographics
+            st.markdown("### 🎯 Top Demographics")
+            df_sorted = df.sort_values('Percentage', ascending=False)
+            
+            for i, row in df_sorted.head(5).iterrows():
+                col1, col2, col3 = st.columns([2, 1, 1])
+                with col1:
+                    st.write(f"**{row['Age Group']} - {row['Gender']}**")
+                with col2:
+                    st.write(f"{row['Percentage']:.1f}%")
+                with col3:
+                    # Create a simple progress bar
+                    progress = row['Percentage'] / df['Percentage'].max()
+                    st.progress(progress)
+        else:
+            st.info("No demographic data available")
+    else:
+        st.info("Demographics data not available - requires sufficient views and channel permissions")
+
+
+def display_geography_analytics(analytics_data):
+    """Display geographic distribution of viewers."""
+    
+    geography_data = analytics_data.get("geography", [])
+    
+    if geography_data and not isinstance(geography_data, dict):
+        st.markdown("### 🗺️ Geographic Distribution")
+        
+        import pandas as pd
+        
+        # Process geography data
+        country_data = []
+        
+        for row in geography_data:
+            if len(row) >= 2:
+                country_code = row[0]
+                views = int(row[1])
+                
+                # Map country codes to names (basic mapping)
+                country_names = {
+                    'US': 'United States', 'GB': 'United Kingdom', 'CA': 'Canada',
+                    'AU': 'Australia', 'DE': 'Germany', 'FR': 'France', 'IN': 'India',
+                    'JP': 'Japan', 'BR': 'Brazil', 'MX': 'Mexico', 'IT': 'Italy',
+                    'ES': 'Spain', 'RU': 'Russia', 'KR': 'South Korea', 'NL': 'Netherlands'
+                }
+                
+                country_name = country_names.get(country_code, country_code)
+                country_data.append({
+                    'Country': country_name,
+                    'Country Code': country_code,
+                    'Views': views
+                })
+        
+        if country_data:
+            df = pd.DataFrame(country_data)
+            df = df.sort_values('Views', ascending=False)
+            
+            # Calculate percentages
+            total_views = df['Views'].sum()
+            df['Percentage'] = (df['Views'] / total_views * 100).round(1)
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**🌍 Top 10 Countries by Views**")
+                top_countries = df.head(10)
+                st.bar_chart(top_countries.set_index('Country')['Views'])
+            
+            with col2:
+                st.markdown("**📊 Geographic Breakdown**")
+                for i, row in df.head(10).iterrows():
+                    col_country, col_views, col_percent = st.columns([2, 1, 1])
+                    with col_country:
+                        st.write(f"🌍 **{row['Country']}**")
+                    with col_views:
+                        st.write(f"{row['Views']:,}")
+                    with col_percent:
+                        st.write(f"{row['Percentage']}%")
+            
+            # Geographic insights
+            st.markdown("### 🌐 Geographic Insights")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                top_country = df.iloc[0]
+                st.metric("🥇 Top Country", top_country['Country'])
+                st.caption(f"{top_country['Views']:,} views ({top_country['Percentage']}%)")
+            
+            with col2:
+                countries_count = len(df)
+                st.metric("🌍 Countries Reached", f"{countries_count}")
+            
+            with col3:
+                top_5_percentage = df.head(5)['Percentage'].sum()
+                st.metric("🎯 Top 5 Countries", f"{top_5_percentage:.1f}%")
+        else:
+            st.info("No geographic data available")
+    else:
+        st.info("Geographic data not available - requires sufficient views")
+
+
+def display_monetization_analytics(analytics_data):
+    """Display monetization and revenue analytics."""
+    
+    monetization_data = analytics_data.get("monetization", {})
+    
+    if monetization_data.get("rows") and not monetization_data.get("error"):
+        st.markdown("### 💰 Monetization Analytics")
+        
+        row = monetization_data["rows"][0]
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            estimated_revenue = float(row[0]) if len(row) > 0 else 0
+            st.metric("💵 Estimated Revenue", f"${estimated_revenue:.2f}")
+        
+        with col2:
+            ad_revenue = float(row[1]) if len(row) > 1 else 0
+            st.metric("📺 Ad Revenue", f"${ad_revenue:.2f}")
+        
+        with col3:
+            cpm = float(row[4]) if len(row) > 4 else 0
+            st.metric("📊 CPM", f"${cpm:.2f}")
+        
+        with col4:
+            playback_cpm = float(row[5]) if len(row) > 5 else 0
+            st.metric("▶️ Playback CPM", f"${playback_cpm:.2f}")
+        
+        # Revenue breakdown
+        if estimated_revenue > 0:
+            st.markdown("### 💹 Revenue Breakdown")
+            
+            red_revenue = float(row[2]) if len(row) > 2 else 0
+            gross_revenue = float(row[3]) if len(row) > 3 else 0
+            
+            revenue_data = {
+                'Ad Revenue': ad_revenue,
+                'YouTube Premium Revenue': red_revenue,
+                'Other Revenue': max(0, gross_revenue - ad_revenue - red_revenue)
+            }
+            
+            import pandas as pd
+            df = pd.DataFrame(list(revenue_data.items()), columns=['Revenue Type', 'Amount'])
+            df = df[df['Amount'] > 0]  # Only show non-zero revenues
+            
+            if not df.empty:
+                st.bar_chart(df.set_index('Revenue Type'))
+            
+            # Performance indicators
+            st.markdown("### 📈 Performance Indicators")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                # Revenue per 1000 views
+                summary_data = analytics_data.get("summary_metrics", {})
+                if summary_data.get("rows"):
+                    views = int(summary_data["rows"][0][1])
+                    rpm = (estimated_revenue / views * 1000) if views > 0 else 0
+                    st.metric("💰 RPM (Revenue per 1000 views)", f"${rpm:.2f}")
+            
+            with col2:
+                impressions_data = analytics_data.get("impressions", {})
+                if impressions_data.get("rows") and not impressions_data.get("error"):
+                    impressions = int(impressions_data["rows"][0][0])
+                    impression_cpm = float(row[6]) if len(row) > 6 else 0
+                    st.metric("👁️ Impression CPM", f"${impression_cpm:.2f}")
+            
+            with col3:
+                # Ad revenue percentage
+                ad_percentage = (ad_revenue / estimated_revenue * 100) if estimated_revenue > 0 else 0
+                st.metric("📺 Ad Revenue %", f"{ad_percentage:.1f}%")
+    else:
+        st.info("💰 Monetization data not available - requires monetized channel and sufficient revenue")
+
+
+def display_time_series_analytics(analytics_data):
+    """Display time series data with interactive charts."""
+    
+    time_series_data = analytics_data.get("time_series", {})
+    
+    if time_series_data.get("rows"):
+        st.markdown("### 📅 Performance Over Time")
+        
+        import pandas as pd
+        
+        # Process time series data
+        dates = []
+        views = []
+        likes = []
+        subscribers = []
+        watch_time = []
+        shares = []
+        comments = []
+        
+        for row in time_series_data["rows"]:
+            if len(row) >= 6:
+                dates.append(row[0])  # Date
+                views.append(int(row[1]))  # Views
+                likes.append(int(row[2]))  # Likes
+                subscribers.append(int(row[3]))  # Subscribers gained
+                watch_time.append(int(row[4]))  # Watch time
+                shares.append(int(row[5]))  # Shares
+                comments.append(int(row[6]) if len(row) > 6 else 0)  # Comments
+        
+        if dates:
+            df = pd.DataFrame({
+                'Date': pd.to_datetime(dates),
+                'Views': views,
+                'Likes': likes,
+                'Subscribers Gained': subscribers,
+                'Watch Time (min)': watch_time,
+                'Shares': shares,
+                'Comments': comments
+            })
+            df = df.set_index('Date')
+            
+            # Display charts
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**📈 Views Over Time**")
+                st.line_chart(df[['Views']])
+                
+                st.markdown("**👍 Likes Over Time**")
+                st.line_chart(df[['Likes']])
+            
+            with col2:
+                st.markdown("**🔔 Subscribers Gained Over Time**")
+                st.line_chart(df[['Subscribers Gained']])
+                
+                st.markdown("**⏱️ Watch Time Over Time**")
+                st.line_chart(df[['Watch Time (min)']])
+            
+            # Combined engagement chart
+            st.markdown("**📊 Engagement Metrics Over Time**")
+            engagement_df = df[['Likes', 'Shares', 'Comments']]
+            st.line_chart(engagement_df)
+            
+            # Summary statistics
+            st.markdown("### 📊 Time Series Summary")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                total_views = sum(views)
+                st.metric("📈 Total Views", f"{total_views:,}")
+                
+                peak_views_day = df.loc[df['Views'].idxmax()].name.strftime('%Y-%m-%d')
+                st.caption(f"Peak: {peak_views_day}")
+            
+            with col2:
+                total_likes = sum(likes)
+                st.metric("👍 Total Likes", f"{total_likes:,}")
+                
+                avg_likes = total_likes / len(likes) if likes else 0
+                st.caption(f"Avg/day: {avg_likes:.1f}")
+            
+            with col3:
+                total_subs = sum(subscribers)
+                st.metric("🔔 Subscribers Gained", f"+{total_subs:,}")
+                
+                best_sub_day = max(subscribers) if subscribers else 0
+                st.caption(f"Best day: +{best_sub_day}")
+            
+            with col4:
+                total_watch_time = sum(watch_time)
+                st.metric("⏱️ Total Watch Time", f"{total_watch_time:,} min")
+                
+                hours = total_watch_time / 60
+                st.caption(f"{hours:.1f} hours")
+        else:
+            st.info("No time series data available")
+    else:
+        st.info("Time series data not available - requires video ownership")
+
+
+def display_engagement_analytics(analytics_data):
+    """Display detailed engagement analytics and metrics."""
+    
+    st.markdown("### 🚀 Engagement Analytics")
+    
+    # Traffic sources
+    traffic_data = analytics_data.get("traffic_sources", [])
+    engagement_data = analytics_data.get("engagement_metrics", {})
+    
+    if traffic_data and not isinstance(traffic_data, dict):
+        st.markdown("### 🚦 Traffic Sources")
+        
+        import pandas as pd
+        
+        traffic_list = []
+        for row in traffic_data:
+            if len(row) >= 2:
+                source_type = row[0]
+                views = int(row[1])
+                
+                # Friendly source names
+                source_names = {
+                    'PLAYLIST': '📋 Playlists',
+                    'SEARCH': '🔍 YouTube Search',
+                    'SUGGESTED_VIDEO': '💡 Suggested Videos',
+                    'BROWSE': '🏠 Browse Features',
+                    'CHANNEL': '📺 Channel Page',
+                    'EXTERNAL': '🌐 External Sources',
+                    'DIRECT': '🔗 Direct Links',
+                    'NOTIFICATION': '🔔 Notifications'
+                }
+                
+                friendly_name = source_names.get(source_type, source_type)
+                traffic_list.append({'Source': friendly_name, 'Views': views})
+        
+        if traffic_list:
+            df = pd.DataFrame(traffic_list)
+            df = df.sort_values('Views', ascending=False)
+            
+            total_traffic_views = df['Views'].sum()
+            df['Percentage'] = (df['Views'] / total_traffic_views * 100).round(1)
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.bar_chart(df.set_index('Source')['Views'])
+            
+            with col2:
+                st.markdown("**Traffic Source Breakdown:**")
+                for i, row in df.iterrows():
+                    st.write(f"**{row['Source']}**: {row['Views']:,} views ({row['Percentage']}%)")
+    
+    # Engagement summary
+    if engagement_data.get("rows"):
+        row = engagement_data["rows"][0]
+        
+        st.markdown("### 💫 Engagement Summary")
+        
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        with col1:
+            total_views = int(row[0]) if len(row) > 0 else 0
+            st.metric("👀 Total Views", f"{total_views:,}")
+        
+        with col2:
+            total_likes = int(row[1]) if len(row) > 1 else 0
+            dislikes = int(row[2]) if len(row) > 2 else 0
+            like_ratio = (total_likes / (total_likes + dislikes) * 100) if (total_likes + dislikes) > 0 else 0
+            st.metric("👍 Like Ratio", f"{like_ratio:.1f}%")
+        
+        with col3:
+            comments = int(row[3]) if len(row) > 3 else 0
+            comment_rate = (comments / total_views * 100) if total_views > 0 else 0
+            st.metric("💬 Comment Rate", f"{comment_rate:.2f}%")
+        
+        with col4:
+            shares = int(row[4]) if len(row) > 4 else 0
+            share_rate = (shares / total_views * 100) if total_views > 0 else 0
+            st.metric("🔄 Share Rate", f"{share_rate:.2f}%")
+        
+        with col5:
+            subs_gained = int(row[5]) if len(row) > 5 else 0
+            sub_rate = (subs_gained / total_views * 100) if total_views > 0 else 0
+            st.metric("🔔 Sub Rate", f"{sub_rate:.2f}%")
+        
+        # Additional engagement metrics
+        st.markdown("### 📊 Additional Metrics")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            playlist_adds = int(row[7]) if len(row) > 7 else 0
+            st.metric("📋 Playlist Additions", f"{playlist_adds:,}")
+        
+        with col2:
+            saves = int(row[8]) if len(row) > 8 else 0
+            st.metric("💾 Saves", f"{saves:,}")
+        
+        with col3:
+            # Calculate overall engagement score
+            if total_views > 0:
+                engagement_score = ((total_likes + comments + shares + playlist_adds + saves) / total_views * 100)
+                st.metric("🌟 Engagement Score", f"{engagement_score:.2f}%")
+            else:
+                st.metric("🌟 Engagement Score", "0.00%")
+
+
+def display_legacy_enhanced_analytics(analytics_data, video_title):
+    """Legacy display function for backwards compatibility."""
     if not analytics_data:
         return
 
     st.subheader("📊 Enhanced Analytics (OAuth)")
 
     # Video performance metrics
-    video_data = analytics_data["video_analytics"]
+    video_data = analytics_data.get("video_analytics", {})
     if video_data.get("rows"):
         row = video_data["rows"][0]
 
@@ -747,7 +1397,7 @@ def display_enhanced_analytics(analytics_data, video_title):
             st.metric("💬 Comments", f"{int(row[6]):,}")
 
     # Audience retention
-    retention_data = analytics_data["retention_data"]
+    retention_data = analytics_data.get("retention_data", {})
     if retention_data and retention_data.get("rows"):
         st.subheader("🎯 Audience Retention")
 
@@ -1349,6 +1999,16 @@ def video_statistics_section():
         key="stats_url",
     )
 
+    # Add time period selector
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        days_back = st.selectbox(
+            "📅 Analytics Period",
+            options=[7, 14, 28, 60, 90],
+            index=2,  # Default to 28 days
+            format_func=lambda x: f"{x} days"
+        )
+
     if st.button("Get Statistics", key="run_stats"):
         if not url.strip():
             st.error("Please enter a YouTube URL")
@@ -1451,16 +2111,49 @@ def video_statistics_section():
         # ------------------------------------------------------------------
         # Metrics grid
         # ------------------------------------------------------------------
-        views = fmt_num(stats.get("viewCount"))
-        likes = fmt_num(stats.get("likeCount"))
-        comments_cnt = fmt_num(stats.get("commentCount"))
-        favorites = fmt_num(stats.get("favoriteCount"))
+        view_count = int(stats.get("viewCount", 0))
+        like_count = int(stats.get("likeCount", 0))
+        comment_count = int(stats.get("commentCount", 0))
+        favorite_count = int(stats.get("favoriteCount", 0))
+        
+        views = fmt_num(view_count)
+        likes = fmt_num(like_count)
+        comments_cnt = fmt_num(comment_count)
+        favorites = fmt_num(favorite_count)
 
+        # Main metrics
         mcol1, mcol2, mcol3, mcol4 = st.columns(4)
         mcol1.metric("👀 Views", views)
         mcol2.metric("👍 Likes", likes)
         mcol3.metric("💬 Comments", comments_cnt)
         mcol4.metric("⭐ Favourites", favorites)
+        
+        # Calculate and display engagement ratios
+        st.markdown("### 📊 Engagement Ratios")
+        ratio_col1, ratio_col2, ratio_col3, ratio_col4 = st.columns(4)
+        
+        with ratio_col1:
+            like_ratio = (like_count / view_count * 100) if view_count > 0 else 0
+            st.metric("👍 Like Rate", f"{like_ratio:.2f}%")
+        
+        with ratio_col2:
+            comment_ratio = (comment_count / view_count * 100) if view_count > 0 else 0
+            st.metric("💬 Comment Rate", f"{comment_ratio:.2f}%")
+        
+        with ratio_col3:
+            engagement_rate = ((like_count + comment_count) / view_count * 100) if view_count > 0 else 0
+            st.metric("📈 Engagement Rate", f"{engagement_rate:.2f}%")
+        
+        with ratio_col4:
+            # Views per day (approximate based on publish date)
+            try:
+                from datetime import datetime
+                publish_date = datetime.fromisoformat(snippet.get('publishedAt', '').replace('Z', '+00:00'))
+                days_since_publish = (datetime.now(publish_date.tzinfo) - publish_date).days
+                views_per_day = view_count / max(days_since_publish, 1)
+                st.metric("📅 Views/Day", f"{views_per_day:,.0f}")
+            except:
+                st.metric("📅 Views/Day", "N/A")
 
         # ------------------------------------------------------------------
         # Channel statistics (public)
@@ -1473,7 +2166,7 @@ def video_statistics_section():
         # ------------------------------------------------------------------
         # OAuth-powered enhanced analytics (if available & owned)
         # ------------------------------------------------------------------
-        analytics_data = get_enhanced_analytics(service_info, vid)
+        analytics_data = get_enhanced_analytics(service_info, vid, days_back)
         if analytics_data:
             display_enhanced_analytics(analytics_data, snippet.get("title", "Video"))
         else:
@@ -2207,19 +2900,284 @@ def display_public_top_content(channel_data):
 
 
 # ---------------------------------------------------------------------------
+# Comments Analyzer section
+# ---------------------------------------------------------------------------
+
+def comments_analyzer_section():
+    """Analyze YouTube video comments for sentiment, opinions, and themes."""
+    
+    st.title("💬 Comments Analyzer")
+    st.markdown("Analyze viewer sentiment and opinions from YouTube video comments using AI")
+
+    url = st.text_input(
+        "YouTube video URL",
+        placeholder="https://youtu.be/abc123XYZ",
+        key="comments_url",
+    )
+
+    if st.button("Analyze Comments", key="run_comments"):
+        if not url.strip():
+            st.error("Please enter a YouTube URL")
+            return
+
+        # Extract video ID
+        try:
+            vid = extract_video_id(url)
+        except Exception as exc:
+            st.error(f"Failed to extract video ID: {exc}")
+            return
+
+        # Check for API access
+        if not yt_key:
+            st.error("YT_API_KEY not configured – please set the environment variable")
+            return
+
+        # Get enhanced services (OAuth + public)
+        service_info = get_enhanced_service(yt_key, vid)
+        display_access_level(service_info)
+
+        # Fetch comments
+        with st.spinner("🔍 Fetching all comments..."):
+            comments = get_enhanced_comments(service_info, vid)
+            
+            if not comments:
+                st.warning("No comments found or comments are disabled for this video")
+                return
+
+            st.info(f"ℹ️ Found {len(comments)} comments - analyzing all of them!")
+
+        # Analyze with LLM
+        with st.spinner("🧠 Analyzing sentiment and themes..."):
+            try:
+                analysis_results = analyze_comments_with_llm(comments)
+            except Exception as e:
+                st.error(f"Analysis failed: {e}")
+                return
+
+        # Display results
+        display_simple_comment_analysis(analysis_results, vid)
+
+
+def analyze_comments_with_llm(comments):
+    """Analyze comments using LLM for sentiment and themes."""
+    
+    # Check if LLM is available
+    if not (SETTINGS.openrouter_api_key or groq_key):
+        st.error("❌ **LLM API key required**")
+        st.info("Set `OPENROUTER_API_KEY` or `GROQ_API_KEY` environment variable")
+        return None
+
+    # Get LLM client
+    client = None
+    if SETTINGS.openrouter_api_key:
+        client = get_client("openrouter", SETTINGS.openrouter_api_key)
+        model = SETTINGS.openrouter_chat_model
+    elif groq_key:
+        client = get_client("groq", groq_key)
+        model = "llama3-8b-8192"
+    
+    if not client:
+        st.error("Failed to initialize LLM client")
+        return None
+
+    # Prepare comments for analysis - use all comments but optimize for token limits
+    total_comments = len(comments)
+    
+    # Sort comments by likes to prioritize most engaging ones for analysis
+    sorted_comments = sorted(comments, key=lambda x: x.get('likeCount', 0), reverse=True)
+    
+    # Take up to 100 most engaging comments for detailed analysis
+    comments_to_analyze = sorted_comments[:100] if len(sorted_comments) > 100 else sorted_comments
+    
+    comment_texts = []
+    for i, comment in enumerate(comments_to_analyze):
+        text = comment.get('textDisplay', '') or comment.get('text', '')
+        likes = comment.get('likeCount', 0)
+        # Truncate very long comments but keep meaningful content
+        truncated_text = text[:200] + "..." if len(text) > 200 else text
+        comment_texts.append(f"{i+1}. [{likes} likes] {truncated_text}")
+
+    prompt = f"""
+Analyze these YouTube video comments ({len(comments_to_analyze)} most engaging out of {total_comments} total) and provide a comprehensive summary:
+
+**Comments:**
+{chr(10).join(comment_texts)}
+
+**Provide analysis in this format:**
+
+## Overall Sentiment
+[Positive/Negative/Mixed] - Brief explanation
+
+## Main Themes
+- Theme 1: Description
+- Theme 2: Description  
+- Theme 3: Description
+
+## Top Positive Points
+- Point 1
+- Point 2
+- Point 3
+
+## Top Concerns/Criticisms
+- Concern 1
+- Concern 2
+- Concern 3
+
+## Creator Recommendations
+- Recommendation 1
+- Recommendation 2
+- Recommendation 3
+
+Keep it concise but thorough. Focus on actionable insights for the creator.
+"""
+
+    try:
+        response = client.chat(
+            [
+                {"role": "system", "content": "You are an expert at analyzing social media engagement and audience sentiment. Focus on providing actionable insights for content creators."},
+                {"role": "user", "content": prompt}
+            ],
+            model=model,
+            temperature=0.3,
+            max_tokens=1000,
+        )
+        
+        return {
+            "summary": response,
+            "comments": comments,  # Return all comments
+            "total_analyzed": len(comments_to_analyze),
+            "total_comments": total_comments
+        }
+        
+    except Exception as e:
+        # Fallback to Groq if OpenRouter fails (rate limits, etc.)
+        # Fresh reload of environment to avoid Streamlit caching issues
+        import os
+        from dotenv import load_dotenv
+        load_dotenv(override=True)
+        fresh_groq_key = os.getenv("GROQ_API_KEY")
+        
+        if fresh_groq_key and ("rate" in str(e).lower() or "429" in str(e) or "openrouter" in str(e).lower()):
+            st.warning("OpenRouter rate limited, falling back to Groq...")
+            try:
+                g_client = get_client("groq", fresh_groq_key)
+                response = g_client.chat(
+                    [
+                        {"role": "system", "content": "You are an expert at analyzing social media engagement and audience sentiment. Focus on providing actionable insights for content creators."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.3,
+                    max_tokens=1000,
+                )
+                
+                return {
+                    "summary": response,
+                    "comments": comments,
+                    "total_analyzed": len(comments_to_analyze),
+                    "total_comments": total_comments
+                }
+                
+            except Exception as e2:
+                st.error(f"Both OpenRouter and Groq failed: {e2}")
+                return None
+        else:
+            st.error(f"Analysis failed: {e}")
+            return None
+
+
+def display_simple_comment_analysis(analysis_results, video_id):
+    """Display simplified comment analysis results."""
+    
+    if not analysis_results:
+        st.warning("No analysis results to display")
+        return
+
+    comments = analysis_results["comments"]
+    total_analyzed = analysis_results["total_analyzed"]
+    total_comments = analysis_results["total_comments"]
+    
+    # Basic stats
+    st.header("📊 Analysis Overview")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("📝 Total Comments", total_comments)
+    with col2:
+        if total_analyzed == total_comments:
+            st.metric("🔍 Analyzed", "All comments")
+        else:
+            st.metric("🔍 Analyzed", f"{total_analyzed} (top by engagement)")
+    with col3:
+        # Most liked comment
+        most_liked = max(comments, key=lambda x: x.get('likeCount', 0), default={})
+        st.metric("🔥 Top Likes", most_liked.get('likeCount', 0))
+
+    # Creator Authenticity Score
+    st.header("🎯 Creator Authenticity Score")
+    authenticity_data = calculate_creator_authenticity(comments, analysis_results)
+    display_authenticity_score(authenticity_data)
+
+    # AI Analysis Results
+    st.header("🤖 AI Analysis")
+    
+    # Add note about analysis approach if we had to prioritize comments
+    if total_analyzed < total_comments:
+        st.info(f"📊 **Analysis Strategy**: With {total_comments} comments, we analyzed the top {total_analyzed} most engaging comments (by likes) to provide the most representative insights while staying within AI processing limits.")
+    
+    st.markdown(analysis_results["summary"])
+
+    # Show sample comments
+    st.header("💬 Sample Comments")
+    
+    # Show top 5 most liked comments
+    most_liked_comments = sorted(comments, key=lambda x: x.get('likeCount', 0), reverse=True)[:5]
+    
+    for i, comment in enumerate(most_liked_comments, 1):
+        with st.expander(f"#{i} - 👍 {comment.get('likeCount', 0)} likes"):
+            st.markdown(f"**{comment.get('author', 'Unknown')}**")
+            st.write(comment.get('textDisplay', ''))
+            st.caption(f"Published: {comment.get('publishedAt', 'Unknown')[:10]}")
+
+    # Simple export
+    st.header("💾 Export")
+    if st.button("📊 Export Comments to CSV"):
+        import pandas as pd
+        df = pd.DataFrame([
+            {
+                "Author": c.get('author', ''),
+                "Comment": c.get('textDisplay', ''),
+                "Likes": c.get('likeCount', 0),
+                "Published": c.get('publishedAt', ''),
+            }
+            for c in comments
+        ])
+        csv = df.to_csv(index=False)
+        st.download_button(
+            "📥 Download CSV",
+            csv,
+            f"comments_{video_id}.csv",
+            "text/csv"
+        )
+
+ 
+
+
+
+# ---------------------------------------------------------------------------
 # App entry point – single page
 # ---------------------------------------------------------------------------
 
 
 def main():
     st.set_page_config(page_title="YouTube Creator OAuth Manager", layout="wide")
-    tab_onboard, tab_audio, tab_video, tab_stats, tab_channel, tab_public = st.tabs([
+    tab_onboard, tab_audio, tab_video, tab_stats, tab_channel, tab_public, tab_comments = st.tabs([
         "Creator Onboarding",
         "Audio Analyzer", 
         "Video Analyzer", 
         "Video Statistics",
         "Channel Analytics",
         "Public Channel Analysis",
+        "Comments Analyzer",
     ])
 
     with tab_onboard:
@@ -2239,6 +3197,285 @@ def main():
         
     with tab_public:
         public_channel_analysis_section()
+        
+    with tab_comments:
+        comments_analyzer_section()
+
+
+def calculate_creator_authenticity(comments, analysis_results):
+    """Calculate creator authenticity percentage using LLM analysis of comments and engagement patterns."""
+    
+    if not comments:
+        return {"score": 0, "breakdown": {}, "insights": []}
+    
+    # Check if LLM is available
+    if not (SETTINGS.openrouter_api_key or groq_key):
+        st.warning("⚠️ **LLM required for authenticity analysis** - Set API keys to enable")
+        return {"score": 0, "breakdown": {}, "insights": ["LLM API key required"]}
+
+    # Get LLM client
+    client = None
+    if SETTINGS.openrouter_api_key:
+        client = get_client("openrouter", SETTINGS.openrouter_api_key)
+        model = SETTINGS.openrouter_chat_model
+    elif groq_key:
+        client = get_client("groq", groq_key)
+        model = "llama3-8b-8192"
+    
+    if not client:
+        return {"score": 0, "breakdown": {}, "insights": ["Failed to initialize LLM client"]}
+
+    # Prepare data for LLM analysis
+    total_comments = len(comments)
+    total_likes = sum(c.get('likeCount', 0) for c in comments)
+    avg_comment_length = sum(len(c.get('textDisplay', '')) for c in comments) / len(comments)
+    comments_with_replies = sum(1 for c in comments if c.get('totalReplyCount', 0) > 0)
+    
+    # Prepare ALL comments for analysis (truncate if too long for token limits)
+    comment_sample = []
+    for i, comment in enumerate(comments):
+        text = comment.get('textDisplay', '')
+        likes = comment.get('likeCount', 0)
+        replies = comment.get('totalReplyCount', 0)
+        # Truncate very long comments to fit more into token limits
+        truncated_text = text[:80] + "..." if len(text) > 80 else text
+        comment_sample.append(f"{i+1}. [{likes}❤️ {replies}💬] {truncated_text}")
+
+    # Join all comments but respect token limits (estimate ~4 chars per token)
+    all_comments_text = chr(10).join(comment_sample)
+    
+    # If the text is too long, truncate to fit in prompt (keep roughly 8000 chars for comments)
+    if len(all_comments_text) > 8000:
+        # Take comments up to the character limit
+        truncated_comments = []
+        current_length = 0
+        for comment_line in comment_sample:
+            if current_length + len(comment_line) > 8000:
+                break
+            truncated_comments.append(comment_line)
+            current_length += len(comment_line)
+        
+        all_comments_text = chr(10).join(truncated_comments)
+        comments_shown = len(truncated_comments)
+        truncation_note = f"(Showing first {comments_shown} comments due to length limits)"
+    else:
+        comments_shown = len(comments)
+        truncation_note = ""
+
+    prompt = f"""
+Analyze this YouTube video's comment section to determine the creator's AUTHENTICITY LEVEL (0-100%).
+
+**Comment Data:**
+- Total comments: {total_comments}
+- Total likes: {total_likes}
+- Average comment length: {avg_comment_length:.1f} characters
+- Comments with replies: {comments_with_replies}
+
+**ALL Comments Analysis {truncation_note}:**
+{all_comments_text}
+
+**Analyze these factors and provide a score:**
+
+1. **Comment Quality (0-100)**: Are comments genuine, thoughtful, and diverse?
+2. **Audience Loyalty (0-100)**: Do comments show real engagement and community?
+
+**Look for:**
+- Bot indicators: repetitive text, emoji spam, very short comments
+- Authentic engagement: varied lengths, thoughtful responses, questions
+- Community signs: conversations, personal stories, specific feedback
+- Loyalty indicators: recurring themes, inside jokes, personal connections
+
+**Respond EXACTLY in this format:**
+AUTHENTICITY_SCORE: [0-100]
+COMMENT_QUALITY: [0-100]
+AUDIENCE_LOYALTY: [0-100]
+LEVEL: [Highly Authentic/Authentic/Moderately Authentic/Low Authenticity]
+INSIGHTS: [3-5 specific observations about authenticity patterns]
+"""
+
+    try:
+        response = client.chat(
+            [
+                {"role": "system", "content": "You are an expert at detecting authentic vs fake social media engagement. Analyze comment patterns to assess creator authenticity."},
+                {"role": "user", "content": prompt}
+            ],
+            model=model,
+            temperature=0.2,
+            max_tokens=800,
+        )
+        
+        # Parse LLM response
+        score = 0
+        comment_quality = 0
+        audience_loyalty = 0
+        level = "Unknown"
+        insights = []
+        
+        for line in response.strip().split('\n'):
+            if line.startswith('AUTHENTICITY_SCORE:'):
+                score = float(line.split(':')[1].strip())
+            elif line.startswith('COMMENT_QUALITY:'):
+                comment_quality = float(line.split(':')[1].strip())
+            elif line.startswith('AUDIENCE_LOYALTY:'):
+                audience_loyalty = float(line.split(':')[1].strip())
+            elif line.startswith('LEVEL:'):
+                level = line.split(':')[1].strip()
+            elif line.startswith('INSIGHTS:'):
+                insights_text = line.split(':', 1)[1].strip()
+                insights = [insight.strip() for insight in insights_text.split(';') if insight.strip()]
+        
+        # Set level emoji
+        level_emoji = "🌟" if "Highly" in level else "✅" if level == "Authentic" else "⚠️" if "Moderately" in level else "🔴"
+        
+        return {
+            "score": round(score, 1),
+            "level": level,
+            "level_emoji": level_emoji,
+            "breakdown": {
+                "Comment Quality": round(comment_quality, 1),
+                "Audience Loyalty": round(audience_loyalty, 1)
+            },
+            "insights": insights,
+            "metrics": {
+                "total_comments": total_comments,
+                "avg_comment_length": round(avg_comment_length, 1),
+                "total_engagement": total_likes,
+                "comments_with_replies": comments_with_replies
+            }
+        }
+        
+    except Exception as e:
+        # Fallback to Groq if OpenRouter fails
+        import os
+        from dotenv import load_dotenv
+        load_dotenv(override=True)
+        fresh_groq_key = os.getenv("GROQ_API_KEY")
+        
+        if fresh_groq_key and ("rate" in str(e).lower() or "429" in str(e) or "openrouter" in str(e).lower()):
+            st.warning("OpenRouter rate limited, falling back to Groq for authenticity analysis...")
+            try:
+                g_client = get_client("groq", fresh_groq_key)
+                response = g_client.chat(
+                    [
+                        {"role": "system", "content": "You are an expert at detecting authentic vs fake social media engagement. Analyze comment patterns to assess creator authenticity."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.2,
+                    max_tokens=800,
+                )
+                
+                # Parse response (same logic as above)
+                score = 0
+                comment_quality = 0
+                audience_loyalty = 0
+                level = "Unknown"
+                insights = []
+                
+                for line in response.strip().split('\n'):
+                    if line.startswith('AUTHENTICITY_SCORE:'):
+                        score = float(line.split(':')[1].strip())
+                    elif line.startswith('COMMENT_QUALITY:'):
+                        comment_quality = float(line.split(':')[1].strip())
+                    elif line.startswith('AUDIENCE_LOYALTY:'):
+                        audience_loyalty = float(line.split(':')[1].strip())
+                    elif line.startswith('LEVEL:'):
+                        level = line.split(':')[1].strip()
+                    elif line.startswith('INSIGHTS:'):
+                        insights_text = line.split(':', 1)[1].strip()
+                        insights = [insight.strip() for insight in insights_text.split(';') if insight.strip()]
+                
+                level_emoji = "🌟" if "Highly" in level else "✅" if level == "Authentic" else "⚠️" if "Moderately" in level else "🔴"
+                
+                return {
+                    "score": round(score, 1),
+                    "level": level,
+                    "level_emoji": level_emoji,
+                    "breakdown": {
+                        "Comment Quality": round(comment_quality, 1),
+                        "Audience Loyalty": round(audience_loyalty, 1)
+                    },
+                    "insights": insights,
+                    "metrics": {
+                        "total_comments": total_comments,
+                        "avg_comment_length": round(avg_comment_length, 1),
+                        "total_engagement": total_likes,
+                        "comments_with_replies": comments_with_replies
+                    }
+                }
+                
+            except Exception as e2:
+                st.error(f"Both OpenRouter and Groq failed for authenticity analysis: {e2}")
+                return {"score": 0, "breakdown": {}, "insights": ["Analysis failed"]}
+        else:
+            st.error(f"Authenticity analysis failed: {e}")
+            return {"score": 0, "breakdown": {}, "insights": ["Analysis failed"]}
+
+
+def display_authenticity_score(authenticity_data):
+    """Display the creator authenticity score with breakdown."""
+    
+    if not authenticity_data or authenticity_data["score"] == 0:
+        st.warning("Unable to calculate authenticity score - insufficient comment data")
+        return
+    
+    score = authenticity_data["score"]
+    level = authenticity_data["level"]
+    level_emoji = authenticity_data["level_emoji"]
+    breakdown = authenticity_data["breakdown"]
+    insights = authenticity_data["insights"]
+    metrics = authenticity_data["metrics"]
+    
+    # Main authenticity score display
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    with col1:
+        st.metric(
+            "🎯 Authenticity Score", 
+            f"{score}%",
+            help="Based on comment quality and audience loyalty analysis"
+        )
+    
+    with col2:
+        st.metric("📊 Level", f"{level_emoji} {level}")
+    
+    with col3:
+        st.metric("💬 Comments Analyzed", metrics["total_comments"])
+    
+    # Score breakdown
+    with st.expander("📊 Score Breakdown", expanded=False):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Comment Quality")
+            st.progress(breakdown["Comment Quality"] / 100)
+            st.caption(f"Score: {breakdown['Comment Quality']}%")
+            st.write("*Analyzes comment genuineness, diversity, and thoughtfulness*")
+        
+        with col2:
+            st.subheader("Audience Loyalty")
+            st.progress(breakdown["Audience Loyalty"] / 100)
+            st.caption(f"Score: {breakdown['Audience Loyalty']}%")
+            st.write("*Evaluates engagement patterns and community interaction*")
+    
+    # Insights
+    if insights:
+        st.subheader("💡 Authenticity Insights")
+        for insight in insights:
+            st.write(insight)
+    
+    # Detailed metrics
+    with st.expander("🔍 Detailed Metrics", expanded=False):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**Comment Analysis:**")
+            st.write(f"• Average comment length: {metrics['avg_comment_length']} characters")
+            st.write(f"• Total engagement (likes): {metrics['total_engagement']}")
+        
+        with col2:
+            st.write("**Community Indicators:**")
+            st.write(f"• Comments with replies: {metrics['comments_with_replies']}")
+            st.write(f"• Analysis powered by AI")
 
 
 if __name__ == "__main__":

@@ -197,7 +197,6 @@ def analyze_frames(
         logger.warning("No frames extracted from %s", video_file)
         return []
 
-    # Vision AI step removed – we simply return frame metadata.
     detections = [
         {"timestamp": ts, "file": p.name} for ts, p in frames
     ]

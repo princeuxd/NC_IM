@@ -58,6 +58,131 @@ def video_summary_metrics(
     return response
 
 
+def video_monetization_metrics(
+    data_service: Resource,
+    video_id: str,
+    channel_id: str,
+    *,
+    days_back: int = 28,
+) -> Dict[str, Any]:
+    """Get monetization metrics for a specific video."""
+    
+    end = date.today()
+    start = end - timedelta(days=days_back)
+
+    analytics = _get_analytics_service(data_service)
+    
+    try:
+        response = (
+            analytics.reports()
+            .query(
+                ids=f"channel=={channel_id}",
+                startDate=start.isoformat(),
+                endDate=end.isoformat(),
+                metrics="estimatedRevenue,estimatedAdRevenue,estimatedRedPartnerRevenue,grossRevenue,cpm,playbackBasedCpm,impressionBasedCpm",
+                filters=f"video=={video_id}",
+                maxResults=1,
+            )
+            .execute()
+        )
+        return response
+    except Exception:
+        # Monetization data might not be available
+        return {"rows": [], "error": "Monetization data not available"}
+
+
+def video_time_series_metrics(
+    data_service: Resource,
+    video_id: str,
+    channel_id: str,
+    *,
+    days_back: int = 28,
+) -> Dict[str, Any]:
+    """Get daily time series data for views, likes, and subscribers gained."""
+    
+    end = date.today()
+    start = end - timedelta(days=days_back)
+
+    analytics = _get_analytics_service(data_service)
+    
+    response = (
+        analytics.reports()
+        .query(
+            ids=f"channel=={channel_id}",
+            startDate=start.isoformat(),
+            endDate=end.isoformat(),
+            metrics="views,likes,subscribersGained,estimatedMinutesWatched,shares,comments",
+            dimensions="day",
+            filters=f"video=={video_id}",
+            maxResults=days_back,
+        )
+        .execute()
+    )
+    return response
+
+
+def video_engagement_metrics(
+    data_service: Resource,
+    video_id: str,
+    channel_id: str,
+    *,
+    days_back: int = 28,
+) -> Dict[str, Any]:
+    """Get comprehensive engagement metrics for a video."""
+    
+    end = date.today()
+    start = end - timedelta(days=days_back)
+
+    analytics = _get_analytics_service(data_service)
+    
+    response = (
+        analytics.reports()
+        .query(
+            ids=f"channel=={channel_id}",
+            startDate=start.isoformat(),
+            endDate=end.isoformat(),
+            metrics="views,likes,dislikes,comments,shares,subscribersGained,subscribersLost,videosAddedToPlaylists,savesAdded,savesRemoved",
+            filters=f"video=={video_id}",
+            maxResults=1,
+        )
+        .execute()
+    )
+    return response
+
+
+def video_impressions_metrics(
+    data_service: Resource,
+    video_id: str,
+    channel_id: str,
+    *,
+    days_back: int = 28,
+) -> Dict[str, Any]:
+    """Get impressions and click-through rate data for a specific video."""
+    
+    end = date.today()
+    start = end - timedelta(days=days_back)
+
+    analytics = _get_analytics_service(data_service)
+    
+    try:
+        response = (
+            analytics.reports()
+            .query(
+                ids=f"channel=={channel_id}",
+                startDate=start.isoformat(),
+                endDate=end.isoformat(),
+                metrics="impressions,impressionClickThroughRate,uniqueViewers",
+                filters=f"video=={video_id}",
+                maxResults=1,
+            )
+            .execute()
+        )
+        return response
+    except Exception:
+        # Impressions data might not be available
+        return {"rows": [], "error": "Impressions data not available"}
+
+
 def audience_retention(
     data_service: Resource,
     video_id: str,
@@ -568,6 +693,67 @@ def get_comprehensive_channel_analytics(
     return analytics_data
 
 
+def get_comprehensive_video_analytics(
+    data_service: Resource,
+    video_id: str,
+    channel_id: str,
+    *,
+    days_back: int = 28,
+) -> Dict[str, Any]:
+    """Get all available video analytics in one convenient function."""
+    
+    analytics_data = {}
+    
+    try:
+        analytics_data["summary_metrics"] = video_summary_metrics(data_service, video_id, channel_id, days_back=days_back)
+    except Exception as e:
+        analytics_data["summary_metrics"] = {"error": str(e)}
+    
+    try:
+        analytics_data["audience_retention"] = audience_retention(data_service, video_id, channel_id, days_back=days_back)
+    except Exception as e:
+        analytics_data["audience_retention"] = {"error": str(e)}
+    
+    try:
+        analytics_data["demographics"] = demographics_breakdown(data_service, video_id, channel_id, days_back=days_back)
+    except Exception as e:
+        analytics_data["demographics"] = {"error": str(e)}
+    
+    try:
+        analytics_data["geography"] = geography_breakdown(data_service, video_id, channel_id, days_back=days_back)
+    except Exception as e:
+        analytics_data["geography"] = {"error": str(e)}
+    
+    try:
+        analytics_data["traffic_sources"] = traffic_sources(data_service, video_id, channel_id, days_back=days_back)
+    except Exception as e:
+        analytics_data["traffic_sources"] = {"error": str(e)}
+    
+    try:
+        analytics_data["monetization"] = video_monetization_metrics(data_service, video_id, channel_id, days_back=days_back)
+    except Exception as e:
+        analytics_data["monetization"] = {"error": str(e)}
+    
+    try:
+        analytics_data["time_series"] = video_time_series_metrics(data_service, video_id, channel_id, days_back=days_back)
+    except Exception as e:
+        analytics_data["time_series"] = {"error": str(e)}
+    
+    try:
+        analytics_data["engagement_metrics"] = video_engagement_metrics(data_service, video_id, channel_id, days_back=days_back)
+    except Exception as e:
+        analytics_data["engagement_metrics"] = {"error": str(e)}
+    
+    try:
+        analytics_data["impressions"] = video_impressions_metrics(data_service, video_id, channel_id, days_back=days_back)
+    except Exception as e:
+        analytics_data["impressions"] = {"error": str(e)}
+    
+    analytics_data["period"] = f"{date.today() - timedelta(days=days_back)} to {date.today()}"
+    
+    return analytics_data
+
+
 __all__ = [
     # Video-level analytics
     "video_summary_metrics",
@@ -575,6 +761,10 @@ __all__ = [
     "traffic_sources",
     "geography_breakdown",
     "demographics_breakdown",
+    "video_monetization_metrics",
+    "video_time_series_metrics",
+    "video_engagement_metrics",
+    "video_impressions_metrics",
     # Channel-level analytics
     "channel_growth_metrics",
     "channel_performance_summary",
@@ -588,4 +778,5 @@ __all__ = [
     "channel_engagement_breakdown",
     "channel_video_performance_stats",
     "get_comprehensive_channel_analytics",
+    "get_comprehensive_video_analytics",
 ] 
