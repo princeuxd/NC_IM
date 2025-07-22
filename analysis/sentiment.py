@@ -1,8 +1,5 @@
 """Unified sentiment scoring utilities using a local HuggingFace model.
 
-This replaces previous *sentiment_llm.py* and is imported by both
-comments and transcript analysis functions.
-
 The model and other defaults are controlled by *config.settings* so they
 can be tweaked via environment variables without changing code.
 """

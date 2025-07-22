@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 import streamlit as st
+import pandas as pd
 from youtube.oauth import get_service as get_oauth_service
 
 from youtube.public import get_service as get_public_service
@@ -10,6 +11,8 @@ from analysis.video_frames import (
     extract_video_id,
     download_video,
     extract_frames,
+    get_video_duration_from_url,
+    auto_select_video_quality,
 )
 from analysis.audio import extract_audio, transcribe as transcribe_audio
 from llms import get_client
@@ -223,6 +226,10 @@ def audio_analyzer_section():
         key="audio_url",
     )
 
+    # Automatically use audio quality for audio analysis
+    quality = "audio"
+    st.info("ℹ️ **Auto Quality**: Using audio-only download for optimal transcription performance.")
+
     if st.button("Run Audio Analysis", key="run_audio"):
         if not url.strip():
             st.error("Please enter a YouTube URL")
@@ -234,7 +241,7 @@ def audio_analyzer_section():
 
         with st.spinner("Downloading video..."):
             try:
-                mp4_path = download_video(url, out_dir)
+                mp4_path = download_video(url, out_dir, quality=quality)
             except Exception as e:
                 st.error(f"Download failed: {e}")
                 return
@@ -318,6 +325,18 @@ def video_analyzer_section():
         key="video_url",
     )
 
+    # Auto-select quality based on video duration
+    if url.strip():
+        duration_minutes = get_video_duration_from_url(url)
+        quality = auto_select_video_quality(duration_minutes)
+        if duration_minutes > 0:
+            st.info(f"ℹ️ **Auto Quality**: Video duration ~{duration_minutes} min → Using '{quality}' quality")
+        else:
+            quality = "small"  # fallback
+            st.warning("⚠️ Could not determine video duration, using 'small' quality as fallback")
+    else:
+        quality = "small"  # default when no URL provided
+
     every_sec = st.slider("Frame interval (seconds)", 1, 30, 5)
     max_frames = st.slider("Max frames to send", 4, 16, 8)
 
@@ -336,7 +355,7 @@ def video_analyzer_section():
 
         with st.spinner("Downloading video …"):
             try:
-                mp4_path = download_video(url, out_dir)
+                mp4_path = download_video(url, out_dir, quality=quality)
             except Exception as e:
                 st.error(f"Download failed: {e}")
                 return
@@ -832,10 +851,12 @@ def display_enhanced_analytics(analytics_data, video_title):
 
         demo_table = []
         for age_group in sorted(age_map.keys()):
-            row = {"Age Group": age_group}
-            row.update(age_map[age_group])
-            demo_table.append(row)
-
+            demo_table.append({
+                "Age Group": age_group,
+                "Male %": f"{age_map[age_group].get('male', 0):.1f}%",
+                "Female %": f"{age_map[age_group].get('female', 0):.1f}%"
+            })
+        
         st.table(demo_table)
 
     st.caption(f"📅 Data period: {analytics_data['period']}")
@@ -958,7 +979,7 @@ def get_enhanced_comments(service_info, video_id):
 
     # Fallback to public API
     try:
-        from analysis import fetch_comments
+        from analysis.comments import fetch_comments
 
         public_comments = fetch_comments(public_service, video_id)
 
@@ -1460,17 +1481,745 @@ def video_statistics_section():
 
 
 # ---------------------------------------------------------------------------
+# Channel Statistics section
+# ---------------------------------------------------------------------------
+
+def channel_statistics_section():
+    """Complete channel analytics: Public data + OAuth extras."""
+    
+    st.title("📊 Channel Analytics (OAuth Enhanced)")
+    
+    # Check for OAuth credentials
+    oauth_info = detect_oauth_capabilities()
+    if not oauth_info["available"]:
+        st.warning("🔐 **OAuth Required**: Use 'Creator Onboarding' to authenticate first.")
+        return
+    
+    # Channel selection
+    channels = oauth_info["channels"]
+    if len(channels) > 1:
+        channel_names = [f"{ch['title']} ({ch['subscriber_count']:,} subs)" for ch in channels]
+        selected_idx = st.selectbox("📺 Select Channel", range(len(channels)), format_func=lambda i: channel_names[i])
+        selected_channel = channels[selected_idx]
+    else:
+        selected_channel = channels[0]
+    
+    # Initialize services
+    try:
+        oauth_service = get_oauth_service(DEFAULT_CLIENT_SECRET, selected_channel["token_file"])
+        public_service = oauth_service  # Same credentials for Data API
+    except Exception as e:
+        st.error(f"❌ Service initialization failed: {e}")
+        return
+    
+    channel_id = selected_channel["id"]
+    
+    # Period selection
+    st.subheader("📅 Analysis Period")
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        period_options = {
+            "Last 7 days": 7,
+            "Last 14 days": 14,
+            "Last 30 days": 30,
+            "Last 60 days": 60,
+            "Last 90 days": 90,
+            "Last 6 months": 180,
+            "Last year": 365
+        }
+        
+        selected_period = st.selectbox(
+            "Select time period for analytics",
+            options=list(period_options.keys()),
+            index=2,  # Default to "Last 30 days"
+            help="Choose the time range for your analytics data"
+        )
+        
+        days_back = period_options[selected_period]
+    
+    with col2:
+        st.metric("📊 Analysis Period", selected_period)
+    
+    # Fetch comprehensive data
+    with st.spinner(f"🔍 Loading analytics for {selected_period.lower()}..."):
+        from analytics_helpers import get_full_channel_analytics
+        analytics_data = get_full_channel_analytics(oauth_service, public_service, channel_id, days_back=days_back)
+    
+    if analytics_data.get("error"):
+        st.error(f"❌ {analytics_data['error']}")
+        return
+    
+    # Display using public renderers (same layout)
+    display_public_channel_overview(analytics_data)
+    display_oauth_enhanced_engagement(analytics_data, selected_period)
+    display_public_upload_patterns(analytics_data)
+    display_public_top_content(analytics_data)
+    
+    # OAuth-only sections
+    display_oauth_audience_insights(analytics_data, selected_period)
+    display_oauth_revenue_metrics(analytics_data, selected_period)
+    display_oauth_growth_trends(analytics_data, selected_period)
+
+
+def display_oauth_enhanced_engagement(analytics_data, period="Last 30 days"):
+    """Enhanced engagement section with OAuth data."""
+    
+    # First show public engagement analysis
+    display_public_engagement_analysis(analytics_data, None)
+    
+    # Add OAuth enhancements
+    oauth_data = analytics_data.get("oauth", {})
+    if not oauth_data or oauth_data.get("error"):
+        return
+    
+    st.subheader(f"🔒 Enhanced Engagement Metrics (OAuth) - {period}")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    # Impressions data
+    impressions = oauth_data.get("impressions", {})
+    if impressions.get("rows"):
+        row = impressions["rows"][0]
+        with col1:
+            total_impressions = int(row[0]) if len(row) > 0 else 0
+            st.metric("👁️ Impressions", f"{total_impressions:,}")
+        with col2:
+            ctr = float(row[1]) if len(row) > 1 else 0
+            st.metric("🎯 Click-Through Rate", f"{ctr:.2f}%")
+        with col3:
+            unique_viewers = int(row[2]) if len(row) > 2 else 0
+            st.metric("👤 Unique Viewers", f"{unique_viewers:,}")
+    
+    # Engagement breakdown
+    engagement = oauth_data.get("engagement_breakdown", {})
+    if engagement.get("rows"):
+        row = engagement["rows"][0]
+        st.markdown("**📊 Detailed Engagement Breakdown**")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            likes = int(row[1]) if len(row) > 1 else 0
+            st.metric("👍 Likes", f"{likes:,}")
+        with col2:
+            shares = int(row[4]) if len(row) > 4 else 0
+            st.metric("🔄 Shares", f"{shares:,}")
+        with col3:
+            saves = int(row[5]) if len(row) > 5 else 0
+            st.metric("💾 Saves", f"{saves:,}")
+        with col4:
+            playlist_adds = int(row[7]) if len(row) > 7 else 0
+            st.metric("📝 Playlist Adds", f"{playlist_adds:,}")
+
+
+def display_oauth_audience_insights(analytics_data, period="Last 30 days"):
+    """Display OAuth-only audience demographics and geography."""
+    
+    oauth_data = analytics_data.get("oauth", {})
+    if not oauth_data or oauth_data.get("error"):
+        return
+    
+    st.header(f"👥 Audience Insights (OAuth) - {period}")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Demographics
+        demo = oauth_data.get("demographics", {})
+        if demo.get("rows"):
+            st.subheader("📊 Demographics")
+            age_gender_map = {}
+            for age, gender, percentage in demo["rows"]:
+                if age not in age_gender_map:
+                    age_gender_map[age] = {}
+                age_gender_map[age][gender] = round(float(percentage), 1)
+            
+            demo_table = []
+            for age_group in sorted(age_gender_map.keys()):
+                row_data = {"Age Group": age_group}
+                row_data.update({f"{gender.title()} %": f"{pct}%" for gender, pct in age_gender_map[age_group].items()})
+                demo_table.append(row_data)
+            
+            st.table(demo_table)
+        else:
+            st.info("Demographics data not available")
+    
+    with col2:
+        # Geography
+        geo = oauth_data.get("geography", {})
+        if geo.get("rows"):
+            st.subheader("🌍 Top Countries")
+            geo_rows = sorted(geo["rows"], key=lambda x: int(x[1]), reverse=True)[:10]
+            geo_table = []
+            for country, views, watch_time in geo_rows:
+                geo_table.append({
+                    "Country": country,
+                    "Views": f"{int(views):,}",
+                    "Watch Time": f"{int(watch_time):,} min"
+                })
+            st.table(geo_table)
+        else:
+            st.info("Geographic data not available")
+    
+    # Traffic Sources (full width)
+    traffic = oauth_data.get("traffic_sources", {})
+    if traffic.get("rows"):
+        st.subheader("🚀 Traffic Sources")
+        total_views = sum(int(row[1]) for row in traffic["rows"])
+        
+        # Friendly source name mapping
+        source_names = {
+            "YT_SEARCH": "YouTube Search",
+            "SUGGESTED_VIDEO": "Suggested Videos",
+            "EXTERNAL_URL": "External Links",
+            "BROWSE_FEATURES": "Browse Features",
+            "NOTIFICATION": "Notifications",
+            "DIRECT_OR_UNKNOWN": "Direct/Unknown",
+            "PLAYLIST": "Playlists",
+            "CHANNEL": "Channel Pages",
+            "SUBSCRIBER": "Subscribers"
+        }
+        
+        traffic_table = []
+        for row in traffic["rows"]:
+            source = row[0]
+            views = row[1]
+            friendly_name = source_names.get(source, source)
+            view_count = int(views)
+            percentage = (view_count / total_views * 100) if total_views > 0 else 0
+            
+            traffic_table.append({
+                "Traffic Source": friendly_name,
+                "Views": f"{view_count:,}",
+                "Percentage": f"{percentage:.1f}%"
+            })
+        
+        st.table(traffic_table)
+
+
+def display_oauth_revenue_metrics(analytics_data, period="Last 30 days"):
+    """Display monetization and revenue data."""
+    
+    oauth_data = analytics_data.get("oauth", {})
+    if not oauth_data or oauth_data.get("error"):
+        return
+    
+    monetization = oauth_data.get("monetization", {})
+    if monetization.get("error") or not monetization.get("rows"):
+        st.header("💰 Monetization")
+        st.info("💡 Monetization data not available - channel may not be monetized or data access restricted")
+        return
+    
+    st.header(f"💰 Revenue Analytics (OAuth) - {period}")
+    
+    row = monetization["rows"][0]
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        revenue = float(row[0]) if row[0] else 0
+        st.metric("💵 Est. Revenue", f"${revenue:.2f}")
+    
+    with col2:
+        ad_revenue = float(row[1]) if len(row) > 1 and row[1] else 0
+        st.metric("📺 Ad Revenue", f"${ad_revenue:.2f}")
+    
+    with col3:
+        cpm = float(row[4]) if len(row) > 4 and row[4] else 0
+        st.metric("📊 CPM", f"${cpm:.2f}")
+    
+    with col4:
+        playback_cpm = float(row[5]) if len(row) > 5 and row[5] else 0
+        st.metric("▶️ Playback CPM", f"${playback_cpm:.2f}")
+    
+    st.caption(f"📅 Revenue data for {period.lower()}")
+
+
+def display_oauth_growth_trends(analytics_data, period="Last 30 days"):
+    """Display growth trends and subscriber analytics."""
+    
+    oauth_data = analytics_data.get("oauth", {})
+    if not oauth_data or oauth_data.get("error"):
+        return
+    
+    growth = oauth_data.get("growth_metrics", {})
+    if not growth.get("rows"):
+        return
+    
+    st.header(f"📈 Growth Trends (OAuth) - {period}")
+    
+    # Process growth data
+    import pandas as pd
+    
+    growth_data = []
+    for row in growth["rows"]:
+        if len(row) >= 6:
+            growth_data.append({
+                "Date": row[0],
+                "Views": int(row[1]),
+                "Subs Gained": int(row[2]),
+                "Subs Lost": int(row[3]),
+                "Watch Time": int(row[4]),
+                "Net Subscribers": int(row[2]) - int(row[3])
+            })
+    
+    if growth_data:
+        df = pd.DataFrame(growth_data)
+        df["Date"] = pd.to_datetime(df["Date"])
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("📊 Daily Views")
+            st.line_chart(df.set_index("Date")["Views"])
+        
+        with col2:
+            st.subheader("👥 Net Subscriber Growth")
+            st.line_chart(df.set_index("Date")["Net Subscribers"])
+        
+        # Summary metrics
+        total_views = df["Views"].sum()
+        net_subs = df["Net Subscribers"].sum()
+        avg_daily_views = df["Views"].mean()
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("📊 Total Views", f"{total_views:,}")
+        with col2:
+            st.metric("👥 Net Subscribers", f"{net_subs:+,}")
+        with col3:
+            st.metric("📈 Avg Daily Views", f"{avg_daily_views:.0f}")
+
+
+# ---------------------------------------------------------------------------
+# Public Channel Analysis section
+# ---------------------------------------------------------------------------
+
+def public_channel_analysis_section():
+    """Analyze any public YouTube channel using only the Data API."""
+    
+    st.title("🌐 Public Channel Analysis")
+    st.markdown("Analyze **any YouTube channel** using only public data - no OAuth required!")
+    
+    # Check if we have API key
+    if not yt_key:
+        st.error("❌ **YouTube Data API key required**")
+        st.info("💡 Set the `YT_API_KEY` environment variable to enable public channel analysis")
+        return
+    
+    # Input section
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        channel_id = st.text_input(
+            "🔗 Enter YouTube Channel ID (starts with 'UC')",
+            placeholder="UCxIJaCMEptJjxmmQgGFsnCg",
+            help="Find the 24-character channel ID in the channel URL – it always starts with 'UC'."
+        )
+    
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)  # Add some spacing
+        analyze_button = st.button("🔍 Analyze Channel", type="primary")
+    
+    # Fixed analysis period (last 30 days)
+    recent_days = 30
+
+    if analyze_button and channel_id.strip():
+        
+        with st.spinner("🔍 Analyzing channel... This may take a moment"):
+            try:
+                from youtube.public import get_comprehensive_channel_data, get_channel_recent_performance
+                
+                # Get public service
+                public_service = get_public_service(yt_key)
+                
+                # Get comprehensive data
+                channel_data = get_comprehensive_channel_data(public_service, channel_id.strip())
+                
+                if channel_data.get("error"):
+                    st.error(f"❌ {channel_data['error']}")
+                    st.info("💡 Ensure the channel ID is correct and the channel is public.")
+                    return
+                
+                # Get recent performance
+                channel_id = channel_data["channel_info"]["id"]
+                recent_performance = get_channel_recent_performance(public_service, channel_id, recent_days)
+                
+                # Verify correct channel was found
+                found_channel = channel_data["channel_info"]
+                st.success(f"✅ **Found Channel**: {found_channel['snippet']['title']} (ID: {found_channel['id']})")
+                
+                # Display analysis
+                display_public_channel_overview(channel_data)
+                display_public_engagement_analysis(channel_data, recent_performance)
+                display_public_upload_patterns(channel_data)
+                display_public_top_content(channel_data)
+                
+            except Exception as e:
+                st.error(f"❌ Analysis failed: {str(e)}")
+                st.info("💡 Make sure the channel URL is valid and publicly accessible")
+
+
+def display_public_channel_overview(channel_data):
+    """Display comprehensive channel overview from public data."""
+    
+    channel_info = channel_data["channel_info"]
+    snippet = channel_info["snippet"]
+    statistics = channel_info["statistics"]
+    
+    st.header("📊 Channel Overview")
+    
+    # Channel header with thumbnail
+    col1, col2 = st.columns([1, 4])
+    
+    with col1:
+        thumbnail_url = snippet.get("thumbnails", {}).get("high", {}).get("url")
+        if thumbnail_url:
+            st.image(thumbnail_url, width=120)
+    
+    with col2:
+        st.markdown(f"## {snippet['title']}")
+        if snippet.get("customUrl"):
+            st.markdown(f"**@{snippet['customUrl']}**")
+        
+        # Channel description preview
+        description = snippet.get("description", "")
+        if description:
+            preview = description[:300] + "..." if len(description) > 300 else description
+            st.markdown(f"*{preview}*")
+    
+    # Key statistics
+    st.subheader("📈 Channel Statistics")
+    
+    subscribers = int(statistics.get("subscriberCount", 0))
+    videos = int(statistics.get("videoCount", 0))
+    views = int(statistics.get("viewCount", 0))
+    
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    with col1:
+        st.metric("👥 Subscribers", f"{subscribers:,}")
+    with col2:
+        st.metric("🎬 Videos", f"{videos:,}")
+    with col3:
+        st.metric("👀 Total Views", f"{views:,}")
+    with col4:
+        if videos > 0:
+            avg_views = views // videos
+            st.metric("📊 Avg Views/Video", f"{avg_views:,}")
+    with col5:
+        # Calculate channel age
+        published_at = snippet.get("publishedAt")
+        if published_at:
+            from datetime import datetime
+            created_date = datetime.fromisoformat(published_at.replace('Z', '+00:00'))
+            years_old = (datetime.now(created_date.tzinfo) - created_date).days // 365
+            st.metric("📅 Channel Age", f"{years_old} years")
+    
+    # Channel insights
+    if subscribers < 1000:
+        st.info("🌱 **Growing Channel**: Building towards monetization threshold (1K subscribers)")
+    elif subscribers < 10000:
+        st.success("🚀 **Established Channel**: Good subscriber base with growth potential")
+    elif subscribers < 100000:
+        st.success("⭐ **Popular Channel**: Strong subscriber base and engagement")
+    else:
+        st.success("🏆 **Major Channel**: Large, established audience")
+
+
+def display_public_engagement_analysis(channel_data, recent_performance):
+    """Display engagement metrics and recent performance analysis."""
+    
+    st.header("📊 Engagement Analysis")
+    
+    engagement_data = channel_data.get("engagement_analysis", {})
+    
+    if not engagement_data:
+        st.info("No engagement data available")
+        return
+    
+    # Core engagement metrics
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("🎯 Overall Performance")
+        
+        total_videos = engagement_data.get("total_videos_analyzed", 0)
+        total_views = engagement_data.get("total_views", 0)
+        total_likes = engagement_data.get("total_likes", 0)
+        total_comments = engagement_data.get("total_comments", 0)
+        avg_engagement = engagement_data.get("avg_engagement_rate", 0)
+        
+        st.metric("📹 Videos Analyzed", f"{total_videos}")
+        st.metric("👀 Total Views", f"{total_views:,}")
+        st.metric("🔥 Avg Engagement Rate", f"{avg_engagement}%")
+        st.metric("👍 Like-to-View Ratio", f"{engagement_data.get('like_to_view_ratio', 0)}%")
+        
+        # Performance tier
+        tier = engagement_data.get("performance_tier", "Unknown")
+        tier_colors = {"High": "🟢", "Medium": "🟡", "Growing": "🔵"}
+        st.markdown(f"**Performance Tier**: {tier_colors.get(tier, '⚪')} {tier}")
+        
+    with col2:
+        st.subheader("📈 Averages & Consistency")
+        
+        avg_views = engagement_data.get("avg_views_per_video", 0)
+        avg_likes = engagement_data.get("avg_likes_per_video", 0)
+        avg_comments = engagement_data.get("avg_comments_per_video", 0)
+        consistency = engagement_data.get("consistency_score", 0)
+        
+        st.metric("📊 Avg Views per Video", f"{avg_views:,.0f}")
+        st.metric("👍 Avg Likes per Video", f"{avg_likes:.1f}")
+        st.metric("💬 Avg Comments per Video", f"{avg_comments:.1f}")
+        
+        # Consistency score interpretation
+        if consistency > 0.7:
+            consistency_label = "🟢 Very Consistent"
+        elif consistency > 0.5:
+            consistency_label = "🟡 Moderately Consistent"
+        else:
+            consistency_label = "🔴 Variable Performance"
+        
+        st.metric("📊 Consistency Score", f"{consistency:.2f}")
+        st.markdown(f"**{consistency_label}**")
+    
+    # Recent performance
+    if recent_performance and not recent_performance.get("error"):
+        st.subheader(f"⏰ Recent Performance ({recent_performance.get('period_days', 30)} days)")
+        
+        recent_videos = recent_performance.get("videos_count", 0)
+        recent_views = recent_performance.get("total_views", 0)
+        recent_avg = recent_performance.get("avg_views_per_video", 0)
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("📹 Recent Videos", f"{recent_videos}")
+        with col2:
+            st.metric("👀 Recent Views", f"{recent_views:,}")
+        with col3:
+            st.metric("📊 Recent Avg Views", f"{recent_avg:,.0f}")
+        
+        # Compare with overall average
+        overall_avg = engagement_data.get("avg_views_per_video", 0)
+        if overall_avg > 0 and recent_avg > 0:
+            performance_change = ((recent_avg - overall_avg) / overall_avg) * 100
+            if abs(performance_change) > 5:
+                trend_emoji = "📈" if performance_change > 0 else "📉"
+                st.markdown(f"**Trend**: {trend_emoji} {performance_change:+.1f}% vs overall average")
+    
+    # Best performing video
+    best_video = engagement_data.get("best_performing_video", {})
+    if best_video:
+        st.subheader("🏆 Best Performing Video")
+        st.markdown(f"**{best_video.get('title', 'Unknown')}**")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("👀 Views", f"{best_video.get('views', 0):,}")
+        with col2:
+            st.metric("👍 Likes", f"{best_video.get('likes', 0):,}")
+        with col3:
+            video_id = best_video.get('video_id')
+            if video_id:
+                st.markdown(f"[🔗 Watch Video](https://youtube.com/watch?v={video_id})")
+
+
+def display_public_upload_patterns(channel_data):
+    """Display upload frequency and timing analysis."""
+    
+    st.header("📅 Upload Patterns & Consistency")
+    
+    upload_data = channel_data.get("upload_patterns", {})
+    
+    if not upload_data:
+        st.info("No upload pattern data available")
+        return
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.subheader("⏰ Upload Frequency")
+        
+        total_videos = upload_data.get("total_videos", 0)
+        avg_days = upload_data.get("avg_days_between_uploads", 0)
+        consistency = upload_data.get("upload_consistency", "Unknown")
+        
+        st.metric("📹 Videos Analyzed", total_videos)
+        st.metric("📅 Avg Days Between Uploads", f"{avg_days:.1f}")
+        
+        consistency_colors = {"High": "🟢", "Medium": "🟡", "Low": "🔴"}
+        st.markdown(f"**Consistency**: {consistency_colors.get(consistency, '⚪')} {consistency}")
+        
+        # Upload frequency insights
+        if avg_days < 7:
+            st.success("🚀 Very active - uploads multiple times per week")
+        elif avg_days < 14:
+            st.info("📈 Good activity - weekly uploads")
+        elif avg_days < 30:
+            st.warning("📉 Moderate activity - bi-weekly uploads")
+        else:
+            st.error("🐌 Low activity - monthly or less frequent uploads")
+    
+    with col2:
+        st.subheader("📊 Optimal Upload Times")
+        
+        best_day = upload_data.get("most_common_upload_day")
+        best_hour = upload_data.get("most_common_upload_hour")
+        
+        if best_day:
+            st.metric("📅 Most Common Day", best_day)
+        if best_hour is not None:
+            st.metric("🕐 Most Common Hour", f"{best_hour}:00")
+        
+        # Day distribution
+        day_distribution = upload_data.get("day_distribution", {})
+        if day_distribution:
+            st.markdown("**Day Distribution:**")
+            for day, count in sorted(day_distribution.items(), key=lambda x: x[1], reverse=True):
+                st.markdown(f"- {day}: {count} videos")
+    
+    with col3:
+        st.subheader("🎬 Content Length")
+        
+        avg_duration = upload_data.get("avg_video_duration_seconds", 0)
+        
+        if avg_duration > 0:
+            minutes = int(avg_duration // 60)
+            seconds = int(avg_duration % 60)
+            st.metric("⏱️ Avg Video Length", f"{minutes}m {seconds}s")
+            
+            # Duration insights
+            if avg_duration < 300:  # 5 minutes
+                st.info("⚡ Short-form content focus")
+            elif avg_duration < 900:  # 15 minutes
+                st.success("🎯 Optimal length for engagement")
+            elif avg_duration < 1800:  # 30 minutes
+                st.info("📺 Long-form content")
+            else:
+                st.warning("🎭 Very long content - ensure high retention")
+        
+        # Latest upload
+        latest_upload = upload_data.get("latest_upload")
+        if latest_upload:
+            from datetime import datetime
+            latest_date = datetime.fromisoformat(latest_upload.replace('Z', '+00:00'))
+            days_ago = (datetime.now(latest_date.tzinfo) - latest_date).days
+            st.metric("📅 Latest Upload", f"{days_ago} days ago")
+
+
+def display_public_top_content(channel_data):
+    """Display top performing videos and playlists."""
+    
+    st.header("🏆 Top Performing Content")
+    
+    popular_videos = channel_data.get("popular_videos", [])
+    playlists = channel_data.get("playlists", [])
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("📹 Most Popular Videos")
+        
+        if popular_videos:
+            top_videos_data = []
+            for i, video in enumerate(popular_videos[:10]):
+                title = video["snippet"]["title"]
+                views = int(video["statistics"].get("viewCount", 0))
+                likes = int(video["statistics"].get("likeCount", 0))
+                published = video["snippet"]["publishedAt"][:10]  # Date only
+                
+                # Shorten title for display
+                short_title = title[:40] + "..." if len(title) > 40 else title
+                
+                top_videos_data.append({
+                    "#": i + 1,
+                    "Title": short_title,
+                    "Views": f"{views:,}",
+                    "Likes": f"{likes:,}",
+                    "Published": published
+                })
+            
+            st.table(top_videos_data)
+            
+            # Quick stats
+            total_top_views = sum(int(v["statistics"].get("viewCount", 0)) for v in popular_videos[:10])
+            st.caption(f"📊 Top 10 videos: {total_top_views:,} total views")
+        else:
+            st.info("No video data available")
+    
+    with col2:
+        st.subheader("📝 Channel Playlists")
+        
+        if playlists:
+            playlist_data = []
+            for playlist in playlists[:10]:
+                title = playlist["snippet"]["title"]
+                video_count = playlist["contentDetails"]["itemCount"]
+                
+                # Shorten title for display
+                short_title = title[:40] + "..." if len(title) > 40 else title
+                
+                playlist_data.append({
+                    "Playlist": short_title,
+                    "Videos": video_count
+                })
+            
+            st.table(playlist_data)
+            
+            total_playlists = len(playlists)
+            total_playlist_videos = sum(p["contentDetails"]["itemCount"] for p in playlists)
+            st.caption(f"📊 {total_playlists} playlists with {total_playlist_videos} total videos")
+        else:
+            st.info("No public playlists found")
+    
+    # Content recommendations
+    if popular_videos:
+        st.subheader("💡 Content Strategy Recommendations")
+        
+        # Analyze top videos for patterns
+        top_5_titles = [v["snippet"]["title"].lower() for v in popular_videos[:5]]
+        
+        recommendations = []
+        
+        # Check for tutorial content
+        if any('tutorial' in title or 'how' in title for title in top_5_titles):
+            recommendations.append("🎯 **Tutorial content performs well** - Consider more educational videos")
+        
+        # Check for project showcases
+        if any('project' in title or 'build' in title for title in top_5_titles):
+            recommendations.append("🛠️ **Project showcases are popular** - Share more development processes")
+        
+        # Check for tech content
+        if any('code' in title or 'programming' in title for title in top_5_titles):
+            recommendations.append("💻 **Tech content resonates** - Expand programming tutorials and reviews")
+        
+        # Views analysis
+        top_video_views = int(popular_videos[0]["statistics"].get("viewCount", 0))
+        avg_views = sum(int(v["statistics"].get("viewCount", 0)) for v in popular_videos[:5]) / 5
+        
+        if top_video_views > avg_views * 3:
+            recommendations.append(f"⭐ **Viral potential identified** - Analyze what made your top video special")
+        
+        if recommendations:
+            for rec in recommendations:
+                st.markdown(rec)
+        else:
+            st.markdown("📈 **Keep creating consistent content** - More data needed for specific recommendations")
+
+
+# ---------------------------------------------------------------------------
 # App entry point – single page
 # ---------------------------------------------------------------------------
 
 
 def main():
     st.set_page_config(page_title="YouTube Creator OAuth Manager", layout="wide")
-    tab_onboard, tab_audio, tab_video, tab_stats = st.tabs([
+    tab_onboard, tab_audio, tab_video, tab_stats, tab_channel, tab_public = st.tabs([
         "Creator Onboarding",
-        "Audio Analyzer",
-        "Video Analyzer",
+        "Audio Analyzer", 
+        "Video Analyzer", 
         "Video Statistics",
+        "Channel Analytics",
+        "Public Channel Analysis",
     ])
 
     with tab_onboard:
@@ -1484,6 +2233,12 @@ def main():
 
     with tab_stats:
         video_statistics_section()
+        
+    with tab_channel:
+        channel_statistics_section()
+        
+    with tab_public:
+        public_channel_analysis_section()
 
 
 if __name__ == "__main__":

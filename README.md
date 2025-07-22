@@ -1,9 +1,4 @@
-# NC_IM – Modular YouTube Intelligence Toolkit
-
-NC_IM is a research toolkit for fetching, analysing and summarising YouTube
-videos at scale. The project has recently been **fully refactored for
-modularity** – every major concern now lives in its own lightweight module so
-that you can pick-and-choose the parts you need.
+# NC_IM - Ncompas Influencer Marketing
 
 ## Key Packages & Entry-points
 
@@ -14,7 +9,6 @@ that you can pick-and-choose the parts you need.
 | Audio        | `analysis/audio.py`                      | Whisper transcription + sentiment                    |
 | Vision       | `analysis/video_frames.py`               | Frame extraction + multimodal LLM object detection   |
 | YouTube API  | `youtube/public.py` / `youtube/oauth.py` | Clean wrappers for public-key & OAuth access         |
-| Pipeline     | _(removed)_                              |                                                      |
 | Streamlit UI | `simple_streamlit_app.py`                | Modern UI built on top of the modular API            |
 
 ## Quick Start
@@ -24,23 +18,17 @@ that you can pick-and-choose the parts you need.
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# Run the analysis pipeline for a video
-python pipeline/fetch_and_analyze.py \
-    --url https://youtu.be/7lCDEYXw3mM \
-    --api-key $YT_API_KEY
-
 # Launch the Streamlit UI
 streamlit run simple_streamlit_app.py
 ```
 
 ## Environment Variables
 
-| Variable             | Purpose                                  |
-| -------------------- | ---------------------------------------- |
-| `YT_API_KEY`         | Google Data API key for public calls     |
-| `OPENROUTER_API_KEY` | LLM provider key (OpenRouter)            |
-| `GROQ_API_KEY`       | LLM provider key (Groq)                  |
-| `FRAME_INTERVAL_SEC` | Default seconds between extracted frames |
+| Variable             | Purpose                              |
+| -------------------- | ------------------------------------ |
+| `YT_API_KEY`         | Google Data API key for public calls |
+| `OPENROUTER_API_KEY` | LLM provider key (OpenRouter)        |
+| `GROQ_API_KEY`       | LLM provider key (Groq)              |
 
 _All settings can also be overridden via `.env` or programmatically through
 `config.settings.update_from_kwargs()`._

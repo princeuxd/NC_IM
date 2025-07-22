@@ -9,6 +9,7 @@ torchvision
 torchaudio
 transformers>=4.40.0
 streamlit
+pandas
 openai
 isodate
 ffmpeg-python

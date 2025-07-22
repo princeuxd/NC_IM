@@ -1,9 +1,5 @@
 """Frame extraction & object detection helpers.
 
-This module wraps the existing `video.extract_frames` and
-`analysis.object_detection.detect_objects` utilities into a single cohesive
-API so other parts of the codebase only need to import from here.
-
 Public API
 ==========
 extract_frames()            – thin passthrough to video.extract_frames
@@ -23,6 +19,54 @@ import re, subprocess, shutil, urllib.parse
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Duration and auto-quality helpers
+# ---------------------------------------------------------------------------
+
+def parse_iso_duration_to_minutes(iso_duration: str) -> int:
+    """Convert ISO-8601 duration (PT#H#M#S) to total minutes."""
+    if not iso_duration:
+        return 0
+    
+    pattern = re.compile(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?")
+    match = pattern.match(iso_duration)
+    if not match:
+        return 0
+    
+    hours, minutes, seconds = (int(x) if x else 0 for x in match.groups())
+    total_minutes = hours * 60 + minutes + (seconds / 60)
+    return int(round(total_minutes))
+
+
+def get_video_duration_from_url(url: str) -> int:
+    """Get video duration in minutes from YouTube URL using yt-dlp."""
+    try:
+        vid = extract_video_id(url)
+        cmd = ["yt-dlp", "--print", "duration", f"https://www.youtube.com/watch?v={vid}"]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        duration_seconds = float(result.stdout.strip())
+        return int(round(duration_seconds / 60))
+    except Exception as e:
+        logger.warning(f"Failed to get video duration: {e}")
+        return 0
+
+
+def auto_select_video_quality(duration_minutes: int) -> str:
+    """Automatically select video quality based on duration.
+    
+    Rules:
+    - 0-5 minutes: high quality
+    - 5-15 minutes: medium quality  
+    - 15+ minutes: low quality (small)
+    """
+    if duration_minutes <= 5:
+        return "best"
+    elif duration_minutes <= 15:
+        return "medium"
+    else:
+        return "small"
 
 
 # ---------------------------------------------------------------------------
@@ -62,22 +106,62 @@ def extract_video_id(url: str) -> str:
     raise ValueError(f"Unable to parse video id from URL: {url}")
 
 
-def download_video(url: str, output_dir: Path | str = "downloads") -> Path:
+def download_video(url: str, output_dir: Path | str = "downloads", quality: str = "best") -> Path:
+    """Download video with configurable quality settings to manage file size.
+    
+    Args:
+        url: YouTube video URL
+        output_dir: Directory to save the video
+        quality: Quality setting - options:
+            - "best": Best quality (largest files) - current default
+            - "medium": Good balance of quality/size (720p max)
+            - "small": Smaller files (480p max)
+            - "tiny": Smallest files (360p max, audio-only fallback)
+            - "audio": Audio only (for transcription-focused workflows)
+    
+    Returns:
+        Path to downloaded video file
+    """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     vid = extract_video_id(url)
-    out_path = output_dir / f"{vid}.mp4"
-    cmd = [
-        "yt-dlp",
-        "-f",
-        "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4",
-        "--merge-output-format",
-        "mp4",
-        "-o",
-        str(out_path),
-        url,
-    ]
-    logger.info("Downloading video %s -> %s", url, out_path)
+    
+    # Configure format selection based on quality preference
+    if quality == "best":
+        # Current behavior - best quality available
+        format_selector = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4"
+        ext = "mp4"
+    elif quality == "medium":
+        # Max 720p, prefer smaller sizes
+        format_selector = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/mp4"
+        ext = "mp4"
+    elif quality == "small":
+        # Max 480p for smaller files
+        format_selector = "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/mp4"
+        ext = "mp4"
+    elif quality == "tiny":
+        # Max 360p, very small files
+        format_selector = "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360][ext=mp4]/worst[ext=mp4]/mp4"
+        ext = "mp4"
+    elif quality == "audio":
+        # Audio only - smallest possible size for transcription workflows
+        format_selector = "bestaudio[ext=m4a]/bestaudio"
+        ext = "m4a"
+    else:
+        raise ValueError(f"Invalid quality setting: {quality}. Use: best, medium, small, tiny, or audio")
+    
+    out_path = output_dir / f"{vid}.{ext}"
+    
+    # Build command - only use merge-output-format for video+audio combinations
+    cmd = ["yt-dlp", "-f", format_selector]
+    
+    if quality != "audio":
+        # Only add merge format for video downloads that combine video+audio
+        cmd.extend(["--merge-output-format", ext])
+    
+    cmd.extend(["-o", str(out_path), url])
+    
+    logger.info("Downloading video %s -> %s (quality: %s)", url, out_path, quality)
     subprocess.run(cmd, check=True)
     return out_path
 
@@ -171,4 +255,7 @@ __all__ = [
     "analyze_frames",
     "extract_video_id",
     "download_video",
+    "parse_iso_duration_to_minutes",
+    "get_video_duration_from_url", 
+    "auto_select_video_quality",
 ] 
