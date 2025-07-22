@@ -4,13 +4,21 @@ __pycache__/
 
 # Environment & secrets
 .env
+.env.*
 client_secret.json
 oauth_token.json
 tokens/
 reports/
 
+# Streamlit secrets (keep template)
+.streamlit/secrets.toml
+
 # Virtual env
 .venv/
 
 # macOS
-.DS_Store 
+.DS_Store
+
+# Temporary files
+*.tmp
+*.log 

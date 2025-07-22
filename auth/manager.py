@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
@@ -35,6 +36,75 @@ DEFAULT_CLIENT_SECRET = ROOT_DIR / "client_secret.json"
 
 
 # ---------------------------------------------------------------------------
+# Environment-based OAuth configuration
+# ---------------------------------------------------------------------------
+
+def get_oauth_config_from_env() -> Dict[str, Any]:
+    """Get OAuth client configuration from environment variables.
+    
+    Returns a dict that can be used to create a client secret configuration.
+    Expected environment variables:
+    - OAUTH_CLIENT_ID
+    - OAUTH_CLIENT_SECRET
+    - OAUTH_PROJECT_ID (optional)
+    """
+    client_id = os.getenv("OAUTH_CLIENT_ID")
+    client_secret = os.getenv("OAUTH_CLIENT_SECRET")
+    project_id = os.getenv("OAUTH_PROJECT_ID", "youtube-analytics-project")
+    
+    if not client_id or not client_secret:
+        return {"valid": False, "error": "Missing OAUTH_CLIENT_ID or OAUTH_CLIENT_SECRET environment variables"}
+    
+    # Create a standard OAuth client configuration
+    config = {
+        "installed": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "project_id": project_id,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob", "http://localhost"]
+        }
+    }
+    
+    return {
+        "valid": True,
+        "config": config,
+        "project_id": project_id,
+        "client_id": client_id,
+        "type": "installed"
+    }
+
+
+def create_temp_client_secret_file() -> Optional[Path]:
+    """Create a temporary client secret file from environment variables.
+    
+    Returns the path to the temporary file if successful, None otherwise.
+    """
+    env_config = get_oauth_config_from_env()
+    
+    if not env_config["valid"]:
+        return None
+    
+    # Create temporary client secret file
+    temp_file = TOKENS_DIR / "_temp_client_secret.json"
+    
+    try:
+        with open(temp_file, 'w') as f:
+            json.dump(env_config["config"], f, indent=2)
+        return temp_file
+    except Exception as e:
+        logger.error(f"Failed to create temporary client secret file: {e}")
+        return None
+
+
+def validate_env_oauth_config() -> Dict[str, Any]:
+    """Validate OAuth configuration from environment variables."""
+    return get_oauth_config_from_env()
+
+
+# ---------------------------------------------------------------------------
 # Public helper functions
 # ---------------------------------------------------------------------------
 
@@ -50,6 +120,10 @@ def list_token_files() -> List[Path]:
     valid_files: List[Path] = []
 
     for path in candidate_files:
+        # Skip temporary files
+        if path.name.startswith("_temp"):
+            continue
+            
         try:
             data = json.loads(path.read_text())
             # An authorised-user credential always contains these fields

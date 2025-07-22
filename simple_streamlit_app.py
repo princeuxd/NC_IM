@@ -28,6 +28,8 @@ from auth.manager import (
     onboard_creator,
     remove_creator as _remove_creator,
     refresh_creator_token,
+    validate_env_oauth_config,
+    create_temp_client_secret_file,
 )
 from analysis.video_vision import summarise_frames
 
@@ -1831,59 +1833,84 @@ def onboarding_section():
         st.subheader("🚀 Add New Creator")
         st.markdown("Connect a YouTube creator account using OAuth 2.0 authentication")
 
-        # Step 1: Client Secret Upload/Validation
-        st.markdown("### Step 1: Client Secret Configuration")
+        # Step 1: Environment Variable Configuration
+        st.markdown("### Step 1: OAuth Configuration")
+        
+        # Import the new environment validation function
+        from auth.manager import validate_env_oauth_config, create_temp_client_secret_file
 
-        col_upload, col_validation = st.columns([2, 1])
-
-        with col_upload:
-            uploaded_cs = st.file_uploader(
-                "📄 Upload client_secret.json",
-                type="json",
-                key="client_secret_uploader",
-                help="🔐 Your Google Cloud Console OAuth 2.0 client secret file. Leave empty to use default file in project root.",
-                label_visibility="visible",
-            )
-
-        # Determine client secret path and validate
-        if uploaded_cs is not None:
-            tmp_cs_path = ROOT / "uploaded_client_secret.json"  # store outside tokens to avoid being treated as a credential file
-            tmp_cs_path.write_bytes(uploaded_cs.read())
-            client_secret_path = tmp_cs_path
-        else:
-            client_secret_path = DEFAULT_CLIENT_SECRET
+        # Check environment variables
+        env_config = validate_env_oauth_config()
+        
+        col_config, col_validation = st.columns([2, 1])
+        
+        with col_config:
+            st.markdown("**Required Environment Variables:**")
+            
+            # Check if environment variables are set
+            oauth_client_id = os.getenv("OAUTH_CLIENT_ID")
+            oauth_client_secret = os.getenv("OAUTH_CLIENT_SECRET") 
+            oauth_project_id = os.getenv("OAUTH_PROJECT_ID")
+            
+            # Display current status
+            id_status = "✅" if oauth_client_id else "❌"
+            secret_status = "✅" if oauth_client_secret else "❌"
+            project_status = "✅" if oauth_project_id else "⚠️"
+            
+            st.code(f"""
+{id_status} OAUTH_CLIENT_ID={'Set' if oauth_client_id else 'Missing'}
+{secret_status} OAUTH_CLIENT_SECRET={'Set' if oauth_client_secret else 'Missing'}
+{project_status} OAUTH_PROJECT_ID={'Set' if oauth_project_id else 'Optional (will use default)'}
+            """)
+            
+            if not env_config["valid"]:
+                st.error("❌ Please set the required environment variables in your `.env` file:")
+                st.code("""
+# Add these to your .env file:
+OAUTH_CLIENT_ID=your_client_id_here
+OAUTH_CLIENT_SECRET=your_client_secret_here
+OAUTH_PROJECT_ID=your_project_id_here  # Optional
+                """)
+                
+                with st.expander("🔧 How to get these values"):
+                    st.markdown("""
+                    1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+                    2. Create or select a project
+                    3. Enable the YouTube Data API v3 and YouTube Analytics API
+                    4. Go to **Credentials** → **Create Credentials** → **OAuth 2.0 Client IDs**
+                    5. Choose **Desktop application** as the application type
+                    6. Download the JSON file and extract:
+                       - `client_id` → `OAUTH_CLIENT_ID`
+                       - `client_secret` → `OAUTH_CLIENT_SECRET`
+                       - `project_id` → `OAUTH_PROJECT_ID`
+                    """)
 
         # Validation and status display
-        validation_result = validate_client_secret(client_secret_path)
-
         with col_validation:
-            if validation_result["valid"]:
-                st.success("✅ Valid Client Secret")
-                st.caption(f"📂 {client_secret_path.name}")
-                if validation_result.get("project_id"):
-                    st.caption(f"🏗️ Project: {validation_result['project_id']}")
-                st.caption(f"🔧 Type: {validation_result.get('type', 'unknown')}")
+            if env_config["valid"]:
+                st.success("✅ OAuth Config Valid")
+                st.caption(f"🏗️ Project: {env_config.get('project_id', 'Default')}")
+                st.caption(f"👤 Client ID: ...{env_config.get('client_id', '')[-8:]}")
+                st.caption(f"🔧 Type: {env_config.get('type', 'installed')}")
             else:
-                st.error("❌ Invalid/Missing")
-                st.caption(validation_result["error"])
+                st.error("❌ Configuration Invalid")
+                st.caption(env_config.get("error", "Unknown error"))
 
         # Show detailed validation info in expander
-        if validation_result["valid"]:
-            with st.expander("🔍 Client Secret Details"):
-                st.code(
-                    f"""
-Project ID: {validation_result.get('project_id', 'N/A')}
-Client ID: {validation_result.get('client_id', 'N/A')[:20]}...
-Type: {validation_result.get('type', 'N/A')}
-File: {client_secret_path}
-                """
-                )
+        if env_config["valid"]:
+            with st.expander("🔍 OAuth Configuration Details"):
+                st.code(f"""
+Project ID: {env_config.get('project_id', 'N/A')}
+Client ID: {env_config.get('client_id', 'N/A')[:20]}...
+Type: {env_config.get('type', 'N/A')}
+Source: Environment Variables
+                """)
 
         # Step 2: OAuth Flow
         st.markdown("### Step 2: OAuth Authentication")
 
-        if not validation_result["valid"]:
-            st.warning("⚠️ Please provide a valid client_secret.json file to proceed")
+        if not env_config["valid"]:
+            st.warning("⚠️ Please configure OAuth environment variables to proceed")
             return
 
         # Enhanced OAuth button with preview
@@ -1923,15 +1950,20 @@ File: {client_secret_path}
                     # Simulate progress for better UX
                     import time
 
-                    status_text.text("⏳ Opening OAuth consent screen...")
+                    status_text.text("⏳ Creating OAuth configuration...")
                     progress_bar.progress(25)
                     time.sleep(0.5)
 
-                    status_text.text("🔐 Waiting for authentication...")
+                    # Create temporary client secret file from environment variables
+                    temp_client_secret = create_temp_client_secret_file()
+                    if not temp_client_secret:
+                        raise Exception("Failed to create OAuth configuration from environment variables")
+
+                    status_text.text("🔐 Opening OAuth consent screen...")
                     progress_bar.progress(50)
 
-                    # Actual OAuth call
-                    _token_path, cid, title = onboard_creator(client_secret_path)
+                    # Actual OAuth call using temporary file
+                    _token_path, cid, title = onboard_creator(temp_client_secret)
 
                     progress_bar.progress(75)
                     status_text.text("📊 Fetching channel information...")
@@ -1939,6 +1971,10 @@ File: {client_secret_path}
 
                     progress_bar.progress(100)
                     status_text.text("✅ Success!")
+
+                    # Clean up temporary file
+                    if temp_client_secret.exists():
+                        temp_client_secret.unlink()
 
                     # Success celebration
                     st.balloons()
@@ -1968,7 +2004,7 @@ File: {client_secret_path}
                     **Error:** {str(exc)}
                     
                     **Troubleshooting:**
-                    - Ensure your client_secret.json is valid
+                    - Ensure your OAuth environment variables are correctly set
                     - Check that you have the required YouTube channel permissions
                     - Verify your Google Cloud Console OAuth setup
                     """
@@ -1979,6 +2015,11 @@ File: {client_secret_path}
                         st.code(
                             f"Error Type: {type(exc).__name__}\nError Message: {str(exc)}"
                         )
+
+                    # Clean up temporary file on error
+                    temp_client_secret = TOKENS_DIR / "_temp_client_secret.json"
+                    if temp_client_secret.exists():
+                        temp_client_secret.unlink()
 
                     # Clear flag on error to allow retry
                     st.session_state.pop("oauth_flow_active", None)

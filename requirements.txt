@@ -1,16 +1,29 @@
-google-api-python-client>=2.120.0
-google-auth-oauthlib>=1.2.0
-google-auth-httplib2>=0.2.0
-python-dotenv>=1.0.0
-yt-dlp
-openai-whisper
-torch
-torchvision
-torchaudio
-transformers>=4.40.0
-streamlit
-pandas
-openai
-isodate
-ffmpeg-python
-imageio-ffmpeg
+# Core Google APIs
+google-api-python-client==2.120.0
+google-auth-oauthlib==1.2.0
+google-auth-httplib2==0.2.0
+
+# Environment and configuration
+python-dotenv==1.0.1
+
+# Video processing
+yt-dlp==2024.1.30
+ffmpeg-python==0.2.0
+imageio-ffmpeg==0.4.9
+
+# AI/ML dependencies
+openai-whisper==20231117
+torch==2.1.2
+torchvision==0.16.2
+torchaudio==2.1.2
+transformers==4.40.2
+
+# Web framework
+streamlit==1.32.0
+
+# Data processing
+pandas==2.2.1
+isodate==0.6.1
+
+# LLM clients
+openai==1.13.3
