@@ -287,6 +287,41 @@ class KeyRotationManager:
             "timestamp": time.time()
         }
 
+    # ------------------------------------------------------------------
+    # Maintenance helpers
+    # ------------------------------------------------------------------
+
+    def clear_rate_limits(self, providers: Optional[List[str]] | None = None) -> None:
+        """Reset *rate_limited_until* for all (or specific) provider keys.
+
+        Example
+        -------
+        >>> from llms.key_manager import key_manager
+        >>> key_manager.clear_rate_limits()  # reset everything
+        >>> key_manager.clear_rate_limits(["openrouter"])  # only OR keys
+        """
+
+        if providers is None:
+            providers = ["openrouter", "groq", "gemini"]
+
+        def _reset(keys: List[KeyStatus]):
+            for k in keys:
+                if k.rate_limited_until > 0:
+                    k.rate_limited_until = 0.0
+
+        if "openrouter" in providers:
+            _reset(self._openrouter_keys)
+        if "groq" in providers:
+            _reset(self._groq_keys)
+        if "gemini" in providers:
+            _reset(self._gemini_keys)
+
+        self._save_state()
+
+        logger.info(
+            "Rate-limit timers cleared for providers: %s", ", ".join(providers)
+        )
+
 
 # Global instance
 key_manager = KeyRotationManager() 

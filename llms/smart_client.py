@@ -21,7 +21,23 @@ class SmartLLMClient(LLMClient):
 
     def chat(self, messages: List[Dict[str, Any]], **kwargs: Any) -> str:
         """Send chat messages with automatic key rotation and provider fallback."""
-        max_retries = 3
+        # Dynamically determine how many times we should retry before giving up.
+        # One retry per available key (across all providers) is usually enough
+        # to guarantee we will eventually hit a non-rate-limited key or exhaust
+        # the pool.  We cap it to 20 just in case someone mis-configures an
+        # excessive amount of keys.
+        try:
+            summary = key_manager.get_status_summary()
+            total_keys = (
+                summary["openrouter"]["total"]
+                + summary["groq"]["total"]
+                + summary["gemini"]["total"]
+            )
+            max_retries = min(max(total_keys, 3), 20)
+        except Exception:
+            # Fallback to previous default if for some reason the summary call
+            # fails (should be rare).
+            max_retries = 10
         
         for attempt in range(max_retries):
             try:
@@ -60,7 +76,17 @@ class SmartLLMClient(LLMClient):
 
     def embed(self, texts: List[str], **kwargs: Any) -> List[List[float]]:
         """Get embeddings with automatic key rotation and provider fallback."""
-        max_retries = 3
+        # Same dynamic retry calculation as in chat()
+        try:
+            summary = key_manager.get_status_summary()
+            total_keys = (
+                summary["openrouter"]["total"]
+                + summary["groq"]["total"]
+                + summary["gemini"]["total"]
+            )
+            max_retries = min(max(total_keys, 3), 20)
+        except Exception:
+            max_retries = 10
         
         for attempt in range(max_retries):
             try:
