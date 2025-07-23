@@ -2040,12 +2040,22 @@ def video_statistics_section():
     # Add time period selector
     col1, col2 = st.columns([3, 1])
     with col2:
-        days_back = st.selectbox(
+        period_options = {
+            7: 7,
+            14: 14,
+            28: 28,
+            60: 60,
+            90: 90,
+            "All Time": None  # Will be set dynamically
+        }
+        period_labels = [f"{k} days" if isinstance(k, int) else k for k in period_options.keys()]
+        selected_period = st.selectbox(
             "📅 Analytics Period",
-            options=[7, 14, 28, 60, 90],
+            options=list(period_options.keys()),
             index=2,  # Default to 28 days
-            format_func=lambda x: f"{x} days"
+            format_func=lambda x: f"{x} days" if isinstance(x, int) else x
         )
+        days_back = period_options[selected_period]
 
     if st.button("Get Statistics", key="run_stats"):
         if not url.strip():
@@ -2096,6 +2106,16 @@ def video_statistics_section():
         snippet = v_item["snippet"]
         stats = v_item.get("statistics", {})
         content = v_item.get("contentDetails", {})
+
+        # If 'All Time' is selected, calculate days_back from video publishedAt
+        if selected_period == "All Time":
+            published_at = snippet.get("publishedAt")
+            from datetime import datetime
+            if published_at:
+                created_date = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+                days_back = (datetime.now(created_date.tzinfo) - created_date).days
+            else:
+                days_back = 3650  # fallback to 10 years if published_at missing
 
         # Friendly formatting helpers
         def fmt_num(val: str | int | None):
@@ -2216,7 +2236,7 @@ def video_statistics_section():
 # ---------------------------------------------------------------------------
 
 def channel_statistics_section():
-    """Complete channel analytics: Public data + OAuth extras."""
+    """Complete channel analytics: Public data + OAuth extras, now with tabbed UI."""
     
     st.title("📊 Channel Analytics (OAuth Enhanced)")
     
@@ -2257,7 +2277,8 @@ def channel_statistics_section():
             "Last 60 days": 60,
             "Last 90 days": 90,
             "Last 6 months": 180,
-            "Last year": 365
+            "Last year": 365,
+            "All Time": None  # Will be set dynamically
         }
         
         selected_period = st.selectbox(
@@ -2268,6 +2289,16 @@ def channel_statistics_section():
         )
         
         days_back = period_options[selected_period]
+        
+        # If 'All Time' is selected, calculate days_back from channel published_at
+        if selected_period == "All Time":
+            published_at = selected_channel.get("published_at") or selected_channel.get("snippet", {}).get("publishedAt")
+            from datetime import datetime
+            if published_at:
+                created_date = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+                days_back = (datetime.now(created_date.tzinfo) - created_date).days
+            else:
+                days_back = 3650  # fallback to 10 years if published_at missing
     
     with col2:
         st.metric("📊 Analysis Period", selected_period)
@@ -2281,16 +2312,65 @@ def channel_statistics_section():
         st.error(f"❌ {analytics_data['error']}")
         return
     
-    # Display using public renderers (same layout)
+    # Channel overview always at the top
     display_public_channel_overview(analytics_data)
-    display_oauth_enhanced_engagement(analytics_data, selected_period)
-    display_public_upload_patterns(analytics_data)
-    display_public_top_content(analytics_data)
     
-    # OAuth-only sections
-    display_oauth_audience_insights(analytics_data, selected_period)
-    display_oauth_revenue_metrics(analytics_data, selected_period)
-    display_oauth_growth_trends(analytics_data, selected_period)
+    # Tabbed analytics layout
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        "📈 Engagement Analysis",
+        "📅 Upload Patterns",
+        "🏆 Top Content",
+        "👥 Audience Insights (OAuth, All Time)",
+        "🚦 Traffic Sources",
+        "💰 Monetization",
+        "📈 Growth Trends (OAuth, All Time)"
+    ])
+    
+    with tab1:
+        display_oauth_enhanced_engagement(analytics_data, selected_period)
+    with tab2:
+        display_public_upload_patterns(analytics_data)
+    with tab3:
+        display_public_top_content(analytics_data)
+    with tab4:
+        display_oauth_audience_insights(analytics_data, "All Time")
+    with tab5:
+        # Extract and display only the traffic sources table from audience insights (OAuth)
+        oauth_data = analytics_data.get("oauth", {})
+        traffic = oauth_data.get("traffic_sources", {})
+        if traffic.get("rows"):
+            st.subheader("🚀 Traffic Sources (OAuth)")
+            total_views = sum(int(row[1]) for row in traffic["rows"])
+            source_names = {
+                "YT_SEARCH": "YouTube Search",
+                "SUGGESTED_VIDEO": "Suggested Videos",
+                "EXTERNAL_URL": "External Links",
+                "BROWSE_FEATURES": "Browse Features",
+                "NOTIFICATION": "Notifications",
+                "DIRECT_OR_UNKNOWN": "Direct/Unknown",
+                "PLAYLIST": "Playlists",
+                "CHANNEL": "Channel Pages",
+                "SUBSCRIBER": "Subscribers"
+            }
+            traffic_table = []
+            for row in traffic["rows"]:
+                source = row[0]
+                views = row[1]
+                friendly_name = source_names.get(source, source)
+                view_count = int(views)
+                percentage = (view_count / total_views * 100) if total_views > 0 else 0
+                traffic_table.append({
+                    "Traffic Source": friendly_name,
+                    "Views": f"{view_count:,}",
+                    "Percentage": f"{percentage:.1f}%"
+                })
+            st.table(traffic_table)
+        else:
+            st.info("No OAuth traffic source data available.")
+    with tab6:
+        display_oauth_revenue_metrics(analytics_data, selected_period)
+    with tab7:
+        display_oauth_growth_trends(analytics_data, "All Time")
 
 
 def display_oauth_enhanced_engagement(analytics_data, period="Last 30 days"):
@@ -2321,6 +2401,8 @@ def display_oauth_enhanced_engagement(analytics_data, period="Last 30 days"):
         with col3:
             unique_viewers = int(row[2]) if len(row) > 2 else 0
             st.metric("👤 Unique Viewers", f"{unique_viewers:,}")
+    else:
+        st.info("ℹ️ Impressions, Click-Through Rate, and Unique Viewers data are not available for this channel or period. This is common for new or low-activity channels, or if YouTube has not made these metrics available.")
     
     # Engagement breakdown
     engagement = oauth_data.get("engagement_breakdown", {})
@@ -2382,7 +2464,8 @@ def display_oauth_audience_insights(analytics_data, period="Last 30 days"):
             st.subheader("🌍 Top Countries")
             geo_rows = sorted(geo["rows"], key=lambda x: int(x[1]), reverse=True)[:10]
             geo_table = []
-            for country, views, watch_time in geo_rows:
+            for row in geo_rows:
+                country, views, watch_time = row[:3]  # Only take the first three columns
                 geo_table.append({
                     "Country": country,
                     "Views": f"{int(views):,}",
@@ -2527,7 +2610,7 @@ def display_oauth_growth_trends(analytics_data, period="Last 30 days"):
 # ---------------------------------------------------------------------------
 
 def public_channel_analysis_section():
-    """Analyze any public YouTube channel using only the Data API."""
+    """Analyze any public YouTube channel using only the Data API, with a modern tabbed UI."""
     
     st.title("🌐 Public Channel Analysis")
     st.markdown("Analyze **any YouTube channel** using only public data - no OAuth required!")
@@ -2556,7 +2639,6 @@ def public_channel_analysis_section():
     recent_days = 30
 
     if analyze_button and channel_id.strip():
-        
         with st.spinner("🔍 Analyzing channel... This may take a moment"):
             try:
                 from youtube.public import get_comprehensive_channel_data, get_channel_recent_performance
@@ -2580,11 +2662,21 @@ def public_channel_analysis_section():
                 found_channel = channel_data["channel_info"]
                 st.success(f"✅ **Found Channel**: {found_channel['snippet']['title']} (ID: {found_channel['id']})")
                 
-                # Display analysis
-                display_public_channel_overview(channel_data)
-                display_public_engagement_analysis(channel_data, recent_performance)
-                display_public_upload_patterns(channel_data)
-                display_public_top_content(channel_data)
+                # Tabbed analytics layout
+                tab1, tab2, tab3, tab4 = st.tabs([
+                    "📊 Overview",
+                    "📈 Engagement Analysis",
+                    "📅 Upload Patterns",
+                    "🏆 Top Content"
+                ])
+                with tab1:
+                    display_public_channel_overview(channel_data)
+                with tab2:
+                    display_public_engagement_analysis(channel_data, recent_performance)
+                with tab3:
+                    display_public_upload_patterns(channel_data)
+                with tab4:
+                    display_public_top_content(channel_data)
                 
             except Exception as e:
                 st.error(f"❌ Analysis failed: {str(e)}")
