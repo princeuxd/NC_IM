@@ -183,6 +183,33 @@ def video_impressions_metrics(
         return {"rows": [], "error": "Impressions data not available"}
 
 
+def video_subscriber_status_breakdown(
+    data_service: Resource,
+    video_id: str,
+    channel_id: str,
+    *,
+    days_back: int = 28,
+) -> Dict[str, Any]:
+    """Get views, watch time, and avg view duration broken down by subscriber status for a video (OAuth only)."""
+    end = date.today()
+    start = end - timedelta(days=days_back)
+    analytics = _get_analytics_service(data_service)
+    response = (
+        analytics.reports()
+        .query(
+            ids=f"channel=={channel_id}",
+            startDate=start.isoformat(),
+            endDate=end.isoformat(),
+            metrics="views,estimatedMinutesWatched,averageViewDuration",
+            dimensions="subscribedStatus",
+            filters=f"video=={video_id}",
+            maxResults=2,
+        )
+        .execute()
+    )
+    return response
+
+
 def audience_retention(
     data_service: Resource,
     video_id: str,
@@ -628,6 +655,31 @@ def channel_video_performance_stats(
     return response
 
 
+def channel_subscriber_status_breakdown(
+    data_service: Resource,
+    channel_id: str,
+    *,
+    days_back: int = 28,
+) -> Dict[str, Any]:
+    """Get views, watch time, and avg view duration broken down by subscriber status for the channel (OAuth only)."""
+    end = date.today()
+    start = end - timedelta(days=days_back)
+    analytics = _get_analytics_service(data_service)
+    response = (
+        analytics.reports()
+        .query(
+            ids=f"channel=={channel_id}",
+            startDate=start.isoformat(),
+            endDate=end.isoformat(),
+            metrics="views,estimatedMinutesWatched,averageViewDuration",
+            dimensions="subscribedStatus",
+            maxResults=2,
+        )
+        .execute()
+    )
+    return response
+
+
 def get_comprehensive_channel_analytics(
     data_service: Resource,
     channel_id: str,
@@ -765,6 +817,7 @@ __all__ = [
     "video_time_series_metrics",
     "video_engagement_metrics",
     "video_impressions_metrics",
+    "video_subscriber_status_breakdown",
     # Channel-level analytics
     "channel_growth_metrics",
     "channel_performance_summary",
@@ -777,6 +830,7 @@ __all__ = [
     "channel_impressions_metrics",
     "channel_engagement_breakdown",
     "channel_video_performance_stats",
+    "channel_subscriber_status_breakdown",
     "get_comprehensive_channel_analytics",
     "get_comprehensive_video_analytics",
 ] 

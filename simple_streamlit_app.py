@@ -741,7 +741,7 @@ def get_legacy_enhanced_analytics(service_info, video_id, days_back=30):
         return None
 
 
-def display_enhanced_analytics(analytics_data, video_title):
+def display_enhanced_analytics(analytics_data, video_title, service_info=None, video_id=None, channel_id=None, days_back=28):
     """Display comprehensive enhanced analytics data in a beautiful format."""
     if not analytics_data:
         return
@@ -749,9 +749,10 @@ def display_enhanced_analytics(analytics_data, video_title):
     st.subheader("📊 Comprehensive Video Analytics (OAuth)")
     
     # Create tabs for different analytics sections
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
         "📈 Overview", "📊 Audience Retention", "🌍 Demographics", 
-        "🗺️ Geography", "💰 Monetization", "📅 Time Series", "🚀 Engagement"
+        "🗺️ Geography", "💰 Monetization", "📅 Time Series", "🚀 Engagement",
+        "👥 Views by Subscriber Status"
     ])
     
     with tab1:
@@ -774,6 +775,39 @@ def display_enhanced_analytics(analytics_data, video_title):
     
     with tab7:
         display_engagement_analytics(analytics_data)
+    
+    with tab8:
+        # Use passed-in service_info, video_id, channel_id, days_back
+        try:
+            oauth_service = service_info.get("oauth_service") if service_info else None
+            if oauth_service and video_id and channel_id:
+                from youtube.analytics import video_subscriber_status_breakdown
+                sub_status_data = video_subscriber_status_breakdown(
+                    oauth_service, video_id, channel_id, days_back=days_back
+                )
+                rows = sub_status_data.get("rows", [])
+                if rows:
+                    st.markdown("### 👥 Views by Subscriber Status")
+                    table = []
+                    for row in rows:
+                        status = row[0].capitalize() if row[0] else "Unknown"
+                        views = int(row[1]) if len(row) > 1 else 0
+                        watch_time = int(row[2]) if len(row) > 2 else 0
+                        avg_view_duration = int(row[3]) if len(row) > 3 else 0
+                        mins, secs = divmod(avg_view_duration, 60)
+                        table.append({
+                            "Status": status,
+                            "Views": f"{views:,}",
+                            "Watch Time (min)": f"{watch_time:,}",
+                            "Avg View Duration": f"{mins}m {secs}s"
+                        })
+                    st.table(table)
+                else:
+                    st.info("ℹ️ Subscriber status breakdown (views, watch time, avg view duration) is not available for this video or period. This requires sufficient data and OAuth access.")
+            else:
+                st.info("ℹ️ Subscriber status breakdown is only available for your own videos with OAuth access.")
+        except Exception as e:
+            st.info(f"ℹ️ Could not fetch subscriber status breakdown: {e}")
 
 
 def display_overview_metrics(analytics_data):
@@ -2226,7 +2260,7 @@ def video_statistics_section():
         # ------------------------------------------------------------------
         analytics_data = get_enhanced_analytics(service_info, vid, days_back)
         if analytics_data:
-            display_enhanced_analytics(analytics_data, snippet.get("title", "Video"))
+            display_enhanced_analytics(analytics_data, snippet.get("title", "Video"), service_info, vid, channel_id, days_back)
         else:
             st.info("Only public metrics available – OAuth analytics not accessible for this video.")
 
@@ -2316,14 +2350,15 @@ def channel_statistics_section():
     display_public_channel_overview(analytics_data)
     
     # Tabbed analytics layout
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
         "📈 Engagement Analysis",
         "📅 Upload Patterns",
         "🏆 Top Content",
         "👥 Audience Insights (OAuth, All Time)",
         "🚦 Traffic Sources",
         "💰 Monetization",
-        "📈 Growth Trends (OAuth, All Time)"
+        "📈 Growth Trends (OAuth, All Time)",
+        "👥 Views by Subscriber Status"
     ])
     
     with tab1:
@@ -2371,6 +2406,37 @@ def channel_statistics_section():
         display_oauth_revenue_metrics(analytics_data, selected_period)
     with tab7:
         display_oauth_growth_trends(analytics_data, "All Time")
+    with tab8:
+        # Channel-level subscriber status breakdown (OAuth only)
+        try:
+            if oauth_service and channel_id:
+                from youtube.analytics import channel_subscriber_status_breakdown
+                sub_status_data = channel_subscriber_status_breakdown(
+                    oauth_service, channel_id, days_back=days_back
+                )
+                rows = sub_status_data.get("rows", [])
+                if rows:
+                    st.markdown("### 👥 Views by Subscriber Status")
+                    table = []
+                    for row in rows:
+                        status = row[0].capitalize() if row[0] else "Unknown"
+                        views = int(row[1]) if len(row) > 1 else 0
+                        watch_time = int(row[2]) if len(row) > 2 else 0
+                        avg_view_duration = int(row[3]) if len(row) > 3 else 0
+                        mins, secs = divmod(avg_view_duration, 60)
+                        table.append({
+                            "Status": status,
+                            "Views": f"{views:,}",
+                            "Watch Time (min)": f"{watch_time:,}",
+                            "Avg View Duration": f"{mins}m {secs}s"
+                        })
+                    st.table(table)
+                else:
+                    st.info("ℹ️ Subscriber status breakdown (views, watch time, avg view duration) is not available for this channel or period. This requires sufficient data and OAuth access.")
+            else:
+                st.info("ℹ️ Subscriber status breakdown is only available for your own channels with OAuth access.")
+        except Exception as e:
+            st.info(f"ℹ️ Could not fetch subscriber status breakdown: {e}")
 
 
 def display_oauth_enhanced_engagement(analytics_data, period="Last 30 days"):
