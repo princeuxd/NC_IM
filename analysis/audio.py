@@ -1,49 +1,66 @@
-"""Audio transcription + sentiment helpers.
+"""Audio transcription using Whisper.
 
-This module offers a minimal public surface:
-
+Main function:
 transcribe()          – Whisper (or openai-whisper) segments
-attach_sentiment()    – enrich segments with polarity
-analyze_audio()       – convenience wrapper that writes JSON if needed
 
+This is a trimmed-down replacement for the original ``analysis.core`` module.
 It re-uses the battle-tested Whisper logic from *analysis.core* and the new
-`sentiment_scores` function so we avoid code duplication while still presenting
-one clear import path for audio work.
+LLM summarization logic from ``analysis.sentiment`` for general-purpose use.
+
+For most use cases, you probably want:
+    from analysis.audio import transcribe
+    segments = transcribe(path_to_audio_file)
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import certifi, os
+import os
+import shutil
+import subprocess
 from pathlib import Path
-from typing import Any, List, Dict, cast, Sequence
-import shutil, subprocess
+from typing import Any, Dict, List, cast
 
 # Local whisper helper (copied from old analysis.core)
 
 def _whisper_transcribe(audio_path: str | os.PathLike) -> List[Dict[str, Any]]:
-    """Transcribe *audio_path* with openai-whisper/whisper."""
-
+    """Transcribe *audio_path* with faster-whisper."""
     try:
-        import whisper  # type: ignore
-        if not hasattr(whisper, "load_model"):
-            raise ImportError
-    except ImportError:
+        from faster_whisper import WhisperModel
+    except ImportError as exc:
         try:
+            # Fallback to openai-whisper if faster-whisper not available
+            import whisper  # type: ignore
+            if not hasattr(whisper, "load_model"):
+                raise ImportError("whisper.load_model not found") from exc
+        except ImportError:
             import openai_whisper as whisper  # type: ignore
-        except ImportError as exc:  # pragma: no cover
-            raise RuntimeError("openai-whisper not installed") from exc
-
-    # ensure SSL certs for model download
-    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
-
-    try:
+        except ImportError:
+            raise RuntimeError("faster-whisper or openai-whisper not installed") from exc
+        
+        # Use openai-whisper fallback
         model = whisper.load_model("base")  # type: ignore[attr-defined]
-        result = model.transcribe(str(audio_path), word_timestamps=False)
-        return cast(List[Dict[str, Any]], result.get("segments", []))
-    except Exception as exc:  # pragma: no cover
-        logging.getLogger(__name__).warning("Whisper transcription failed: %s", exc)
+        result = model.transcribe(str(audio_path))  # type: ignore[attr-defined]
+        return result.get("segments", [])
+    
+    # Use faster-whisper (preferred)
+    try:
+        model = WhisperModel("base", device="cpu", compute_type="int8")
+        segments, _ = model.transcribe(str(audio_path), beam_size=5)
+        
+        # Convert faster-whisper segments to openai-whisper format for compatibility
+        result_segments = []
+        for segment in segments:
+            result_segments.append({
+                "start": segment.start,
+                "end": segment.end,
+                "text": segment.text
+            })
+        return result_segments
+        
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Faster-Whisper transcription failed: %s", exc)
         return []
 
 from analysis.sentiment import sentiment_scores
@@ -61,7 +78,7 @@ def transcribe(audio_path: Path | str):
     return _whisper_transcribe(audio_path)
 
 
-def attach_sentiment(segments: Sequence[Dict[str, Any]]):
+def attach_sentiment(segments: List[Dict[str, Any]]):
     """Return new list where each segment includes a *sentiment* score."""
 
     if not segments:

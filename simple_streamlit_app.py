@@ -74,6 +74,16 @@ with st.expander("🔧 Debug Info", expanded=False):
     st.code(
         f"Keys: YT={'✓' if yt_key else '✗'} OR={'✓' if openrouter_key else '✗'} GQ={'✓' if groq_key else '✗'}"
     )
+    
+    # Rate limit reset button
+    if st.button("🔄 Reset Rate Limits", help="Clear all rate limit timers for LLM providers"):
+        try:
+            from llms.key_manager import key_manager
+            key_manager.clear_rate_limits()
+            st.success("✅ Rate limits cleared for all providers!")
+            st.rerun()  # Refresh the page to show updated status
+        except Exception as e:
+            st.error(f"❌ Failed to reset rate limits: {e}")
 # ---------------------------------------------
 
 
