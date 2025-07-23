@@ -76,28 +76,84 @@ class GeminiClient(LLMClient):
             role = msg.get("role", "user")
             content = msg.get("content", "")
             
-            # Map OpenAI roles to Gemini roles
-            if role == "system":
-                # Gemini doesn't have system role, prepend to first user message
-                if not gemini_messages:
+            # Handle multimodal content (list of content items)
+            if isinstance(content, list):
+                parts = []
+                for item in content:
+                    if item.get("type") == "text":
+                        parts.append(item["text"])
+                    elif item.get("type") == "image_url":
+                        # Extract base64 data from data URL
+                        image_url = item["image_url"]["url"]
+                        if image_url.startswith("data:image/"):
+                            # Remove data:image/jpeg;base64, prefix
+                            base64_data = image_url.split(",", 1)[1]
+                            # Create Gemini-compatible blob
+                            import base64
+                            image_data = base64.b64decode(base64_data)
+                            
+                            # Use the genai library's blob creation
+                            try:
+                                blob = self._genai.types.Blob(
+                                    mime_type="image/jpeg",
+                                    data=image_data
+                                )
+                                parts.append(blob)
+                            except Exception:
+                                # Fallback: try creating blob dictionary directly
+                                parts.append({
+                                    "mime_type": "image/jpeg",
+                                    "data": image_data
+                                })
+                
+                # Map OpenAI roles to Gemini roles for multimodal
+                if role == "system":
+                    if not gemini_messages:
+                        # Add system instruction as text part
+                        system_parts = [f"System instructions: {parts[0] if parts else ''}"]
+                        gemini_messages.append({
+                            "role": "user",
+                            "parts": system_parts
+                        })
+                    else:
+                        # Prepend to existing first user message
+                        if gemini_messages[0]["role"] == "user":
+                            gemini_messages[0]["parts"].insert(0, f"System instructions: {parts[0] if parts else ''}")
+                elif role == "user":
                     gemini_messages.append({
-                        "role": "user",
-                        "parts": [f"System instructions: {content}"]
+                        "role": "user", 
+                        "parts": parts
                     })
-                else:
-                    # Add to existing first user message
-                    if gemini_messages[0]["role"] == "user":
-                        gemini_messages[0]["parts"][0] = f"System instructions: {content}\n\nUser: {gemini_messages[0]['parts'][0]}"
-            elif role == "user":
-                gemini_messages.append({
-                    "role": "user", 
-                    "parts": [content]
-                })
-            elif role == "assistant":
-                gemini_messages.append({
-                    "role": "model",  # Gemini uses "model" instead of "assistant"
-                    "parts": [content]
-                })
+                elif role == "assistant":
+                    gemini_messages.append({
+                        "role": "model",  # Gemini uses "model" instead of "assistant"
+                        "parts": parts
+                    })
+            
+            # Handle simple text content (string)
+            else:
+                # Map OpenAI roles to Gemini roles
+                if role == "system":
+                    # Gemini doesn't have system role, prepend to first user message
+                    if not gemini_messages:
+                        gemini_messages.append({
+                            "role": "user",
+                            "parts": [f"System instructions: {content}"]
+                        })
+                    else:
+                        # Add to existing first user message
+                        if gemini_messages[0]["role"] == "user":
+                            gemini_messages[0]["parts"][0] = f"System instructions: {content}\n\nUser: {gemini_messages[0]['parts'][0]}"
+                elif role == "user":
+                    gemini_messages.append({
+                        "role": "user", 
+                        "parts": [content]
+                    })
+                elif role == "assistant":
+                    gemini_messages.append({
+                        "role": "model",  # Gemini uses "model" instead of "assistant"
+                        "parts": [content]
+                    })
         
         return gemini_messages
 

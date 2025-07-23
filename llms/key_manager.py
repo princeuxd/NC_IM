@@ -207,8 +207,11 @@ class KeyRotationManager:
         
         return None
     
-    def get_client_with_fallback(self) -> Tuple[Any, str, KeyStatus]:
+    def get_client_with_fallback(self, require_vision: bool = False) -> Tuple[Any, str, KeyStatus]:
         """Get an LLM client with automatic provider fallback.
+        
+        Args:
+            require_vision: If True, only return providers that support vision/multimodal
         
         Returns:
             Tuple of (client_instance, provider_name, key_status)
@@ -219,7 +222,12 @@ class KeyRotationManager:
         from .base import get_client  # Import here to avoid circular imports
         
         # Try providers in order: OpenRouter → Groq → Gemini
+        # But skip providers that don't support vision if required
         providers = ["openrouter", "groq", "gemini"]
+        
+        if require_vision:
+            # Groq doesn't support vision models yet
+            providers = ["openrouter", "gemini"]
         
         for provider in providers:
             key_status = self._get_next_key(provider)
@@ -233,7 +241,10 @@ class KeyRotationManager:
                     key_status.mark_rate_limited(5)  # Short cooldown for client creation failures
                     self._save_state()  # Save state after marking key as rate limited
         
-        raise RuntimeError("All API keys exhausted across all providers")
+        if require_vision:
+            raise RuntimeError("All vision-capable API keys exhausted")
+        else:
+            raise RuntimeError("All API keys exhausted across all providers")
     
     def handle_api_error(self, key_status: KeyStatus, error: Exception) -> None:
         """Handle API errors and update key status accordingly."""

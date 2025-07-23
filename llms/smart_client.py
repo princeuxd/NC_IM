@@ -21,6 +21,9 @@ class SmartLLMClient(LLMClient):
 
     def chat(self, messages: List[Dict[str, Any]], **kwargs: Any) -> str:
         """Send chat messages with automatic key rotation and provider fallback."""
+        # Check if this is a vision request by looking for image content
+        require_vision = self._has_image_content(messages)
+        
         # Dynamically determine how many times we should retry before giving up.
         # One retry per available key (across all providers) is usually enough
         # to guarantee we will eventually hit a non-rate-limited key or exhaust
@@ -28,11 +31,18 @@ class SmartLLMClient(LLMClient):
         # excessive amount of keys.
         try:
             summary = key_manager.get_status_summary()
-            total_keys = (
-                summary["openrouter"]["total"]
-                + summary["groq"]["total"]
-                + summary["gemini"]["total"]
-            )
+            if require_vision:
+                # Only count vision-capable providers (OpenRouter + Gemini)
+                total_keys = (
+                    summary["openrouter"]["total"]
+                    + summary["gemini"]["total"]
+                )
+            else:
+                total_keys = (
+                    summary["openrouter"]["total"]
+                    + summary["groq"]["total"]
+                    + summary["gemini"]["total"]
+                )
             max_retries = min(max(total_keys, 3), 20)
         except Exception:
             # Fallback to previous default if for some reason the summary call
@@ -44,7 +54,7 @@ class SmartLLMClient(LLMClient):
                 # Get a fresh client if we don't have one or need to retry
                 if self._current_client is None or attempt > 0:
                     self._current_client, self._current_provider, self._current_key_status = (
-                        key_manager.get_client_with_fallback()
+                        key_manager.get_client_with_fallback(require_vision=require_vision)
                     )
                 
                 # Make the API call
@@ -74,8 +84,21 @@ class SmartLLMClient(LLMClient):
         # This should never be reached due to the raise in the loop
         raise RuntimeError("Unexpected error in smart client")
 
+    def _has_image_content(self, messages: List[Dict[str, Any]]) -> bool:
+        """Check if messages contain image content requiring vision capabilities."""
+        for message in messages:
+            content = message.get("content", "")
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "image_url":
+                        return True
+        return False
+
     def embed(self, texts: List[str], **kwargs: Any) -> List[List[float]]:
         """Get embeddings with automatic key rotation and provider fallback."""
+        # Embeddings are text-only, so no vision required
+        require_vision = False
+        
         # Same dynamic retry calculation as in chat()
         try:
             summary = key_manager.get_status_summary()
@@ -93,7 +116,7 @@ class SmartLLMClient(LLMClient):
                 # Get a fresh client if we don't have one or need to retry
                 if self._current_client is None or attempt > 0:
                     self._current_client, self._current_provider, self._current_key_status = (
-                        key_manager.get_client_with_fallback()
+                        key_manager.get_client_with_fallback(require_vision=require_vision)
                     )
                 
                 # Make the API call
