@@ -106,7 +106,12 @@ def extract_audio(video_file: Path | str, wav_path: Path | str | None = None) ->
 
     if shutil.which("ffmpeg") is None:
         logger.warning("ffmpeg not in PATH; skipping audio extraction.")
-        return wav_path
+        logger.info("To fix: Install ffmpeg or add 'ffmpeg' to packages.txt for Streamlit Cloud")
+        # Return the original video file if it's already audio format
+        if video_file.suffix.lower() in ['.m4a', '.mp3', '.wav', '.aac']:
+            logger.info("Video file is already audio format, using directly: %s", video_file)
+            return video_file
+        raise RuntimeError("ffmpeg is required for audio extraction. Install ffmpeg or use audio-only download.")
 
     cmd = [
         "ffmpeg",
@@ -120,7 +125,15 @@ def extract_audio(video_file: Path | str, wav_path: Path | str | None = None) ->
         str(wav_path),
     ]
     logger.info("Extracting audio track to %s", wav_path)
-    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError as e:
+        logger.error("ffmpeg failed to extract audio: %s", e)
+        # If input is already audio format, try using it directly
+        if video_file.suffix.lower() in ['.m4a', '.mp3', '.wav', '.aac']:
+            logger.info("Using original audio file directly: %s", video_file)
+            return video_file
+        raise RuntimeError(f"Audio extraction failed: {e}")
     return wav_path
 
 
