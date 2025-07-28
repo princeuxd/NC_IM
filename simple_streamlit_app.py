@@ -1,5 +1,6 @@
 import os
 import json
+import time
 from pathlib import Path
 
 import streamlit as st
@@ -32,6 +33,7 @@ from auth.manager import (
     create_temp_client_secret_file,
 )
 from analysis.video_vision import summarise_frames
+from analysis.azure_video_indexer import AzureVideoIndexer, AzureVideoIndexerError, format_insights_summary, upload_and_analyze
 
 # Set up logging to see what's happening
 logging.basicConfig(level=logging.INFO)
@@ -3329,10 +3331,11 @@ def display_simple_comment_analysis(analysis_results, video_id):
 
 def main():
     st.set_page_config(page_title="YouTube Creator OAuth Manager", layout="wide")
-    tab_onboard, tab_audio, tab_video, tab_stats, tab_channel, tab_public, tab_comments = st.tabs([
+    tab_onboard, tab_audio, tab_video, tab_azure_vi, tab_stats, tab_channel, tab_public, tab_comments = st.tabs([
         "Creator Onboarding",
         "Audio Analyzer", 
-        "Video Analyzer", 
+        "Video Analyzer",
+        "☁️ Azure Video Indexer",
         "Video Statistics",
         "Channel Analytics",
         "Public Channel Analysis",
@@ -3347,6 +3350,9 @@ def main():
 
     with tab_video:
         video_analyzer_section()
+
+    with tab_azure_vi:
+        azure_video_indexer_section()
 
     with tab_stats:
         video_statistics_section()
@@ -3595,6 +3601,344 @@ def display_authenticity_score(authenticity_data):
             st.write("**Community Indicators:**")
             st.write(f"• Comments with replies: {metrics['comments_with_replies']}")
             st.write(f"• Analysis powered by AI")
+
+
+# ---------------------------------------------------------------------------
+# Azure Video Indexer section
+# ---------------------------------------------------------------------------
+
+
+def azure_video_indexer_section():
+    st.title("☁️ Azure Video Indexer")
+    
+    # Configuration status
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        subscription_key_status = "✅" if SETTINGS.azure_vi_subscription_key else "❌"
+        st.metric("Subscription Key", subscription_key_status)
+        if SETTINGS.azure_vi_subscription_key:
+            st.caption(f"Key: ...{SETTINGS.azure_vi_subscription_key[-8:]}")
+    
+    with col2:
+        account_id_status = "✅" if SETTINGS.azure_vi_account_id else "❌"
+        st.metric("Account ID", account_id_status)
+        if SETTINGS.azure_vi_account_id:
+            st.caption(f"ID: {SETTINGS.azure_vi_account_id}")
+    
+    with col3:
+        st.metric("Location", SETTINGS.azure_vi_location)
+    
+    # Test connection button
+    if SETTINGS.azure_vi_subscription_key and SETTINGS.azure_vi_account_id:
+        if st.button("🔍 Test API Connection", help="Test if your credentials are working"):
+            try:
+                vi = AzureVideoIndexer()
+                with st.spinner("Testing connection..."):
+                    # Try to get an access token
+                    token = vi._get_access_token()
+                    st.success("✅ Connection successful! Your credentials are working.")
+                    st.info(f"Access token obtained (expires in ~1 hour)")
+            except AzureVideoIndexerError as e:
+                st.error(f"❌ Connection failed: {e}")
+                st.write("**Common issues:**")
+                st.write("- Make sure you're using an ARM-based Azure Video Indexer account")
+                st.write("- Verify your subscription key is from the Developer Portal")
+                st.write("- Check that your Account ID matches your Azure resource")
+            except Exception as e:
+                st.error(f"❌ Unexpected error: {e}")
+    
+    # Configuration help
+    if not SETTINGS.azure_vi_subscription_key or not SETTINGS.azure_vi_account_id:
+        with st.expander("🔧 Configuration Help", expanded=True):
+            st.warning("Azure Video Indexer configuration is incomplete. Please set the following environment variables:")
+            st.code("""
+# Required environment variables:
+AZURE_VI_SUBSCRIPTION_KEY=your_api_subscription_key_here
+AZURE_VI_ACCOUNT_ID=your_account_id_here
+
+# Optional (defaults to 'eastus'):
+AZURE_VI_LOCATION=eastus
+            """)
+            st.info("**Step-by-step setup instructions:**")
+            
+            st.write("**1. Create an ARM-based Azure Video Indexer Account:**")
+            st.write("   - Go to [Azure Portal](https://portal.azure.com)")
+            st.write("   - Create a new 'Azure AI Video Indexer' resource")
+            st.write("   - Note down your Account ID and Location from the resource overview")
+            
+            st.write("**2. Get API Subscription Key:**")
+            st.write("   - Visit [Azure Video Indexer Developer Portal](https://api-portal.videoindexer.ai/)")
+            st.write("   - Sign in with your Azure account (same one used for Azure Portal)")
+            st.write("   - Click 'APIs' in the top menu")
+            st.write("   - Subscribe to the API (if not already subscribed)")
+            st.write("   - Go to 'Profile' in the top-right corner")
+            st.write("   - Click 'Subscriptions' to see your subscription keys")
+            st.write("   - Copy either the 'Primary key' or 'Secondary key'")
+            
+            st.write("**3. Configure Environment Variables:**")
+            st.write("   - Add the keys to your `.env` file or environment variables")
+            st.write("   - Restart your Streamlit app after adding the variables")
+            
+            st.error("**Important:** Classic Video Indexer accounts are deprecated. You must use an ARM-based account created through Azure Portal.")
+        return
+    
+    # Main interface
+    st.write("Upload a video to Azure Video Indexer for comprehensive AI analysis including:")
+    st.write("• **Audio**: Transcription, speaker identification, sentiment analysis")
+    st.write("• **Video**: Face detection, object recognition, scene analysis")
+    st.write("• **Content**: Topic extraction, keyword identification, content moderation")
+    
+    # Video input methods
+    input_method = st.radio(
+        "Choose input method:",
+        ["YouTube URL", "Upload File"],
+        horizontal=True
+    )
+    
+    video_path = None
+    video_name = None
+    
+    if input_method == "YouTube URL":
+        url = st.text_input(
+            "YouTube video URL",
+            placeholder="https://youtu.be/abc123XYZ",
+            key="azure_vi_url",
+        )
+        
+        if url.strip():
+            try:
+                vid = extract_video_id(url)
+                video_name = f"youtube_{vid}"
+                
+                # Quality selection for Azure VI
+                quality = st.selectbox(
+                    "Video Quality (affects processing time & cost)",
+                    ["best", "medium", "small", "audio"],
+                    index=1,  # Default to medium
+                    help="Lower quality = faster processing & lower cost"
+                )
+                
+                if st.button("Download & Prepare Video", key="download_for_azure"):
+                    with st.spinner("Downloading video..."):
+                        try:
+                            out_dir = REPORTS_DIR / vid
+                            out_dir.mkdir(parents=True, exist_ok=True)
+                            video_path = download_video(url, out_dir, quality=quality)
+                            st.success(f"✅ Video downloaded: {video_path.name}")
+                            st.session_state['azure_vi_video_path'] = str(video_path)
+                            st.session_state['azure_vi_video_name'] = video_name
+                        except Exception as e:
+                            st.error(f"❌ Download failed: {e}")
+                            return
+            except ValueError as e:
+                st.error(f"❌ Invalid YouTube URL: {e}")
+    
+    else:  # Upload File
+        uploaded_file = st.file_uploader(
+            "Choose a video file",
+            type=['mp4', 'avi', 'mov', 'mkv', 'webm'],
+            key="azure_vi_upload"
+        )
+        
+        if uploaded_file is not None:
+            video_name = uploaded_file.name.split('.')[0]
+            
+            # Save uploaded file temporarily
+            temp_dir = REPORTS_DIR / "temp"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            video_path = temp_dir / uploaded_file.name
+            
+            with open(video_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            
+            st.success(f"✅ File uploaded: {uploaded_file.name}")
+            st.session_state['azure_vi_video_path'] = str(video_path)
+            st.session_state['azure_vi_video_name'] = video_name
+    
+    # Use video from session state if available
+    if 'azure_vi_video_path' in st.session_state:
+        video_path = Path(st.session_state['azure_vi_video_path'])
+        video_name = st.session_state['azure_vi_video_name']
+    
+    # Analysis options
+    if video_path and video_path.exists():
+        st.write("---")
+        st.subheader("📤 Upload to Azure Video Indexer")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            language = st.selectbox(
+                "Video Language",
+                ["English", "Spanish", "French", "German", "Italian", "Portuguese", "Chinese", "Japanese"],
+                key="azure_vi_language"
+            )
+        
+        with col2:
+            wait_for_completion = st.checkbox(
+                "Wait for processing to complete",
+                value=True,
+                help="If unchecked, will upload and return immediately"
+            )
+        
+        # Processing options
+        with st.expander("⚙️ Advanced Options", expanded=False):
+            timeout_minutes = st.slider(
+                "Processing timeout (minutes)",
+                min_value=5,
+                max_value=60,
+                value=30,
+                help="Maximum time to wait for processing"
+            )
+            
+            privacy = st.selectbox(
+                "Privacy Setting",
+                ["Private", "Public"],
+                help="Private videos are only visible to your account"
+            )
+        
+        # Upload button
+        if st.button("🚀 Upload & Analyze with Azure Video Indexer", type="primary"):
+            try:
+                vi = AzureVideoIndexer()
+                # Check for existing processed video
+                st.info("Checking for existing processed video...")
+                existing_id = None
+                try:
+                    videos = vi.list_videos()
+                    if isinstance(videos, list):
+                        for v in videos:
+                            if v.get('name') == video_name and v.get('state') == 'Processed':
+                                existing_id = v['id']
+                                break
+                    else:
+                        st.warning(f"Azure Video Indexer returned an error when listing videos: {videos}")
+                except Exception as e:
+                    st.warning(f"Could not check for existing videos: {e}")
+                if existing_id:
+                    st.success("This video has already been processed. Fetching insights...")
+                    try:
+                        insights = vi.get_video_insights(existing_id)
+                        if isinstance(insights, dict):
+                            # Try to use summarizedInsights if present
+                            if 'summarizedInsights' in insights:
+                                si = insights['summarizedInsights']
+                                st.markdown(f"**Video Name:** {si.get('name', 'N/A')}")
+                                st.markdown(f"**Duration:** {si.get('duration', {}).get('time', 'N/A')}")
+                                if si.get('keywords'):
+                                    st.markdown("**Keywords:** " + ", ".join([kw.get('name', '') for kw in si['keywords']]))
+                                if si.get('faces'):
+                                    st.markdown("**Faces Detected:** " + ", ".join([face.get('name', 'Unknown') for face in si['faces']]))
+                                if si.get('brands'):
+                                    st.markdown("**Brands Detected:** " + ", ".join([brand.get('name', '') for brand in si['brands']]))
+                                if si.get('topics'):
+                                    st.markdown("**Topics:** " + ", ".join([topic.get('name', '') for topic in si['topics']]))
+                                if si.get('sentiments'):
+                                    sentiments = si['sentiments']
+                                    pos = sum(1 for s in sentiments if s.get('sentimentType') == 'Positive')
+                                    neg = sum(1 for s in sentiments if s.get('sentimentType') == 'Negative')
+                                    neu = len(sentiments) - pos - neg
+                                    st.markdown(f"**Sentiment:** Positive: {pos}, Neutral: {neu}, Negative: {neg}")
+                                if si.get('transcript'):
+                                    st.markdown("**Transcript (first 5 segments):**")
+                                    for t in si['transcript'][:5]:
+                                        st.write(f"- {t.get('text', '')}")
+                                # Add more fields as needed
+                                if not any([si.get('keywords'), si.get('faces'), si.get('brands'), si.get('topics'), si.get('sentiments'), si.get('transcript')]):
+                                    st.info("No detailed insights available. Here is the raw summary:")
+                                    st.write(si)
+                            else:
+                                summary = format_insights_summary(insights)
+                                st.markdown(summary)
+                        else:
+                            st.error(f"Azure Video Indexer returned an error: {insights}")
+                            return
+                    except Exception as e:
+                        st.error(f"Failed to fetch insights for existing video: {e}")
+                        st.write(insights)
+                        return
+                # If not found, proceed with upload and analysis
+                with st.spinner("Uploading video to Azure Video Indexer..."):
+                    try:
+                        video_id = vi.upload_video(
+                            video_path,
+                            video_name=video_name,
+                            language=language,
+                            privacy=privacy
+                        )
+                    except AzureVideoIndexerError as e:
+                        if 'ALREADY_EXISTS' in str(e):
+                            st.error("This video content was already uploaded and is blocked by Azure's duplicate prevention. Please wait before re-uploading or use a different video.")
+                            return
+                        else:
+                            st.error(f"❌ Azure Video Indexer error: {e}")
+                            return
+                st.success(f"✅ Video uploaded successfully! Video ID: `{video_id}`")
+                if wait_for_completion:
+                    with st.spinner(f"Processing video (this may take up to {timeout_minutes} minutes)..."):
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        try:
+                            start_time = time.time()
+                            timeout_seconds = timeout_minutes * 60
+                            while time.time() - start_time < timeout_seconds:
+                                status = vi.get_video_status(video_id)
+                                state = status.get('state', 'Unknown')
+                                elapsed = time.time() - start_time
+                                progress = min(elapsed / timeout_seconds, 0.95)
+                                progress_bar.progress(progress)
+                                status_text.text(f"Status: {state} ({elapsed:.0f}s elapsed)")
+                                if state == 'Processed':
+                                    progress_bar.progress(1.0)
+                                    status_text.text("✅ Processing completed!")
+                                    break
+                                elif state == 'Failed':
+                                    st.error("❌ Processing failed!")
+                                    return
+                                time.sleep(10)
+                            insights = vi.get_video_insights(video_id)
+                            if isinstance(insights, dict):
+                                if 'summarizedInsights' in insights:
+                                    si = insights['summarizedInsights']
+                                    st.markdown(f"**Video Name:** {si.get('name', 'N/A')}")
+                                    st.markdown(f"**Duration:** {si.get('duration', {}).get('time', 'N/A')}")
+                                    if si.get('keywords'):
+                                        st.markdown("**Keywords:** " + ", ".join([kw.get('name', '') for kw in si['keywords']]))
+                                    if si.get('faces'):
+                                        st.markdown("**Faces Detected:** " + ", ".join([face.get('name', 'Unknown') for face in si['faces']]))
+                                    if si.get('brands'):
+                                        st.markdown("**Brands Detected:** " + ", ".join([brand.get('name', '') for brand in si['brands']]))
+                                    if si.get('topics'):
+                                        st.markdown("**Topics:** " + ", ".join([topic.get('name', '') for topic in si['topics']]))
+                                    if si.get('sentiments'):
+                                        sentiments = si['sentiments']
+                                        pos = sum(1 for s in sentiments if s.get('sentimentType') == 'Positive')
+                                        neg = sum(1 for s in sentiments if s.get('sentimentType') == 'Negative')
+                                        neu = len(sentiments) - pos - neg
+                                        st.markdown(f"**Sentiment:** Positive: {pos}, Neutral: {neu}, Negative: {neg}")
+                                    if si.get('transcript'):
+                                        st.markdown("**Transcript (first 5 segments):**")
+                                        for t in si['transcript'][:5]:
+                                            st.write(f"- {t.get('text', '')}")
+                                    if not any([si.get('keywords'), si.get('faces'), si.get('brands'), si.get('topics'), si.get('sentiments'), si.get('transcript')]):
+                                        st.info("No detailed insights available. Here is the raw summary:")
+                                        st.write(si)
+                                else:
+                                    summary = format_insights_summary(insights)
+                                    st.markdown(summary)
+                            else:
+                                st.error(f"Azure Video Indexer returned an error: {insights}")
+                        except AzureVideoIndexerError as e:
+                            st.error(f"❌ Processing error: {e}")
+                        except Exception as e:
+                            st.error(f"❌ Unexpected error: {e}")
+                else:
+                    st.info(f"📤 Video uploaded with ID: `{video_id}`. Check back later for results.")
+            except AzureVideoIndexerError as e:
+                st.error(f"❌ Azure Video Indexer error: {e}")
+            except Exception as e:
+                st.error(f"❌ Unexpected error: {e}")
 
 
 if __name__ == "__main__":

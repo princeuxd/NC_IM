@@ -1,7 +1,14 @@
-"""Analysis package marker.
+"""Analysis package for NC_IM toolkit.
 
-This file is intentionally minimal; submodules are imported directly:
-    import analysis.video_vision
-    import analysis.audio
-    import analysis.comments
-""" 
+Provides audio transcription, video frame analysis, sentiment scoring,
+and Azure Video Indexer integration.
+"""
+
+__all__ = [
+    "audio",
+    "video_frames", 
+    "video_vision",
+    "sentiment",
+    "comments",
+    "azure_video_indexer",
+] 

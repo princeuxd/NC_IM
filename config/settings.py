@@ -4,6 +4,7 @@ Only parameters that the current codebase still uses are kept.
 • FRAME_INTERVAL_SEC  – seconds between extracted frames in video analysis.
 • SENTIMENT_MODEL     – HuggingFace model id for sentiment scoring.
 • Multiple API keys per provider for automatic rotation when rate limits are hit.
+• Azure Video Indexer settings for cloud-based video analysis.
 """
 
 from __future__ import annotations
@@ -72,6 +73,11 @@ class PipelineSettings:
     gemini_chat_model: str = os.getenv(
         "GEMINI_CHAT_MODEL", "gemini-2.5-flash-lite"
     )
+
+    # --- Azure Video Indexer settings ------------------------------------
+    azure_vi_subscription_key: str | None = os.getenv("AZURE_VI_SUBSCRIPTION_KEY")
+    azure_vi_location: str = os.getenv("AZURE_VI_LOCATION", "eastus")
+    azure_vi_account_id: str | None = os.getenv("AZURE_VI_ACCOUNT_ID")
 
     def __post_init__(self):
         """Load multiple keys after initialization."""
