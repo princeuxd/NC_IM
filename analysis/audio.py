@@ -1,15 +1,4 @@
 """Audio transcription using Whisper.
-
-Main function:
-transcribe()          – Whisper (or openai-whisper) segments
-
-This is a trimmed-down replacement for the original ``analysis.core`` module.
-It re-uses the battle-tested Whisper logic from *analysis.core* and the new
-LLM summarization logic from ``analysis.sentiment`` for general-purpose use.
-
-For most use cases, you probably want:
-    from analysis.audio import transcribe
-    segments = transcribe(path_to_audio_file)
 """
 
 from __future__ import annotations

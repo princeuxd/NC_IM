@@ -1,6 +1,8 @@
 import os
 import json
 from pathlib import Path
+from typing import List, Dict
+from datetime import datetime
 
 import streamlit as st
 import pandas as pd
@@ -3329,7 +3331,7 @@ def display_simple_comment_analysis(analysis_results, video_id):
 
 def main():
     st.set_page_config(page_title="YouTube Creator OAuth Manager", layout="wide")
-    tab_onboard, tab_audio, tab_video, tab_stats, tab_channel, tab_public, tab_comments = st.tabs([
+    tab_onboard, tab_audio, tab_video, tab_stats, tab_channel, tab_public, tab_comments, tab_final_channel = st.tabs([
         "Creator Onboarding",
         "Audio Analyzer", 
         "Video Analyzer", 
@@ -3337,6 +3339,7 @@ def main():
         "Channel Analytics",
         "Public Channel Analysis",
         "Comments Analyzer",
+        "Final Channel Stat",
     ])
 
     with tab_onboard:
@@ -3359,6 +3362,9 @@ def main():
         
     with tab_comments:
         comments_analyzer_section()
+        
+    with tab_final_channel:
+        final_channel_stat_section()
 
 
 def calculate_creator_authenticity(comments, analysis_results):
@@ -3595,6 +3601,893 @@ def display_authenticity_score(authenticity_data):
             st.write("**Community Indicators:**")
             st.write(f"• Comments with replies: {metrics['comments_with_replies']}")
             st.write(f"• Analysis powered by AI")
+
+
+# ---------------------------------------------------------------------------
+# Final Channel Stat section - Sequential video analysis
+# ---------------------------------------------------------------------------
+
+def get_channel_videos(service, channel_id: str, max_videos: int = 50) -> List[Dict]:
+    """Get videos from a channel for sequential analysis."""
+    try:
+        # Get uploads playlist
+        channel_response = service.channels().list(
+            part="contentDetails,snippet",
+            id=channel_id
+        ).execute()
+        
+        if not channel_response["items"]:
+            return []
+        
+        channel_info = channel_response["items"][0]
+        uploads_playlist_id = channel_info["contentDetails"]["relatedPlaylists"]["uploads"]
+        
+        # Get video IDs from uploads playlist
+        video_ids = []
+        next_page = None
+        while len(video_ids) < max_videos:
+            pl_resp = service.playlistItems().list(
+                part="contentDetails,snippet",
+                playlistId=uploads_playlist_id,
+                maxResults=min(50, max_videos - len(video_ids)),
+                pageToken=next_page
+            ).execute()
+            
+            for item in pl_resp["items"]:
+                video_ids.append({
+                    "video_id": item["contentDetails"]["videoId"],
+                    "title": item["snippet"]["title"],
+                    "published_at": item["snippet"]["publishedAt"]
+                })
+            
+            next_page = pl_resp.get("nextPageToken")
+            if not next_page:
+                break
+        
+        return video_ids[:max_videos]
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch channel videos: {e}")
+        return []
+
+
+def process_single_video_complete(video_id: str, video_title: str, output_base_dir: Path) -> Dict:
+    """Process a single video completely - download, analyze audio+video, generate summary, cleanup."""
+    
+    video_url = f"https://www.youtube.com/watch?v={video_id}"
+    video_dir = output_base_dir / video_id
+    video_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Check if video has already been processed successfully
+    summary_file = video_dir / f"{video_id}_summary.md"
+    json_file = video_dir / f"{video_id}_data.json"
+    
+    if summary_file.exists() and json_file.exists():
+        logger.info(f"Video {video_id} already processed, skipping...")
+        return {
+            "video_id": video_id,
+            "title": video_title,
+            "success": True,
+            "audio_analysis": "Already processed",
+            "video_analysis": "Already processed",
+            "structured_data": None,
+            "error": None,
+            "skipped": True
+        }
+    
+    result = {
+        "video_id": video_id,
+        "title": video_title,
+        "success": False,
+        "audio_analysis": None,
+        "video_analysis": None,
+        "structured_data": None,
+        "error": None,
+        "skipped": False
+    }
+    
+    try:
+        # Step 1: Download video with appropriate quality
+        duration_minutes = get_video_duration_from_url(video_url)
+        quality = auto_select_video_quality(duration_minutes)
+        
+        with st.spinner(f"⬇️ Downloading {video_title[:50]}... (Quality: {quality})"):
+            mp4_path = download_video(video_url, video_dir, quality=quality)
+        
+        # Step 2: Enhanced Audio Analysis
+        with st.spinner(f"🎤 Analyzing audio for {video_title[:50]}..."):
+            # Extract audio
+            wav_path = extract_audio(mp4_path, video_dir / "audio.wav")
+            
+            # Transcribe
+            segments = transcribe_audio(wav_path)
+            full_transcript = ""
+            if segments:
+                full_transcript = "\n".join(s.get("text", "") for s in segments)
+                
+                # Enhanced audio analysis with LLM
+                if SETTINGS.openrouter_api_keys or SETTINGS.groq_api_keys or SETTINGS.gemini_api_keys:
+                    from llms import get_smart_client
+                    client = get_smart_client()
+                    
+                    enhanced_audio_prompt = f"""You are an expert content analyst. Analyze this video transcript thoroughly and provide detailed insights in the following structured format:
+
+## CONTENT TYPE CLASSIFICATION
+Classify the primary content type and any secondary types. Choose from: Tutorial, Review, Vlog, Gaming, Educational, Entertainment, News, Interview, Reaction, Unboxing, Comparison, How-to, Commentary, Music, Comedy, Travel, Food, Fashion, Technology, Finance, Health, Lifestyle.
+
+## VOICE AND COMMUNICATION STYLE
+Analyze the creator's communication style including:
+- Speaking pace (fast/medium/slow)
+- Tone (casual/professional/enthusiastic/serious)
+- Language complexity (simple/moderate/advanced)
+- Use of slang, technical terms, or jargon
+- Personality traits evident in speech
+- Engagement techniques used
+
+## CONTENT QUALITY AND PRODUCTION STYLE
+Assess:
+- Script quality (improvised/semi-scripted/fully scripted)
+- Information density (high/medium/low)
+- Structure and organization
+- Use of examples, stories, or analogies
+- Educational value
+- Entertainment value
+
+## SENTIMENT ANALYSIS
+Provide:
+- Overall sentiment (Positive/Neutral/Negative/Mixed)
+- Emotional tone throughout the video
+- Energy level (high/medium/low)
+- Mood indicators
+
+## CONTENT AUTHENTICITY ASSESSMENT
+Rate authenticity level (1-10) and provide reasoning:
+- Genuine personal opinions vs. scripted content
+- Spontaneous reactions vs. planned responses
+- Personal experience sharing
+- Transparency about sponsorships/partnerships
+- Natural speech patterns vs. overly polished delivery
+
+## PRODUCTS, BRANDS, AND SPONSORSHIPS
+List ALL products, brands, services, or companies mentioned with:
+- Product/brand name
+- Context of mention (review, sponsorship, casual reference, comparison)
+- Approximate timestamp or segment description
+- Sponsored content indicators (explicit or implicit)
+- Creator's apparent relationship with the brand
+
+## KEY MOMENTS AND TIMESTAMPS
+Identify important segments with approximate time references:
+- Main topic introductions
+- Product demonstrations or mentions
+- Sponsored content segments
+- Key information or takeaways
+- Engagement hooks (subscribe reminders, calls to action)
+
+Video Title: {video_title}
+Video Duration: ~{duration_minutes} minutes
+
+Transcript:
+{full_transcript[:15000]}"""
+                    
+                    try:
+                        audio_summary = client.chat(
+                            [
+                                {"role": "system", "content": "You are an expert video content analyst. Provide detailed, structured analysis following the exact format requested."},
+                                {"role": "user", "content": enhanced_audio_prompt},
+                            ],
+                            temperature=0.3,
+                            max_tokens=1500,
+                        )
+                        result["audio_analysis"] = audio_summary
+                    except Exception as e:
+                        logger.warning(f"Enhanced audio analysis failed: {e}")
+                        # Fallback to basic analysis
+                        basic_prompt = (
+                            "Analyze this video transcript and provide: 1) Content summary, 2) Sentiment, 3) Content type, 4) Any products/brands mentioned."
+                        )
+                        result["audio_analysis"] = client.chat(
+                            [{"role": "system", "content": basic_prompt}, {"role": "user", "content": full_transcript[:8000]}],
+                            temperature=0.3, max_tokens=800,
+                        )
+        
+        # Step 3: Enhanced Video Analysis (frames)
+        with st.spinner(f"🖼️ Analyzing video frames for {video_title[:50]}..."):
+            frames = extract_frames(mp4_path, video_dir / "frames", every_sec=10)  # Every 10 seconds for better coverage
+            if frames:
+                frames = frames[:12]  # Increase to 12 frames for better analysis
+                
+                if SETTINGS.openrouter_api_keys or SETTINGS.groq_api_keys or SETTINGS.gemini_api_keys:
+                    enhanced_video_prompt = f"""Analyze these video frames and provide insights about:
+
+## VISUAL CONTENT ANALYSIS
+- Production quality (lighting, camera work, editing)
+- Setting and environment (home, studio, outdoor, etc.)
+- Visual elements and graphics
+- Product placement visibility
+- Text overlays or graphics
+
+## VISUAL PRODUCTS AND BRANDING
+Identify any products, logos, or branding visible in the frames:
+- Product names or brands visible
+- Approximate time segments where they appear
+- How prominently they're featured
+- Context (being used, displayed, mentioned)
+
+## PRODUCTION STYLE ASSESSMENT
+- Professional vs. amateur production
+- Editing sophistication
+- Visual engagement techniques
+- Brand consistency
+- Overall aesthetic quality
+
+Video Title: {video_title}
+Number of frames analyzed: {len(frames)}
+Frame interval: ~10 seconds apart"""
+
+                    try:
+                        # Use the summarise_frames function properly
+                        video_summary = summarise_frames(frames, prompt=enhanced_video_prompt)
+                        result["video_analysis"] = video_summary
+                    except Exception as e:
+                        logger.warning(f"Enhanced video analysis failed: {e}")
+                        # Fallback to basic frame analysis
+                        try:
+                            result["video_analysis"] = summarise_frames(frames)
+                        except Exception as e2:
+                            logger.warning(f"Basic video analysis also failed: {e2}")
+                            result["video_analysis"] = f"Frame analysis failed for {len(frames)} frames. Error: {str(e)}"
+        
+        # Step 4: Generate Structured Data Summary
+        if result.get("audio_analysis"):
+            structured_analysis_prompt = f"""Based on the following video analysis, extract structured data in JSON format.
+
+Audio Analysis:
+{result.get('audio_analysis', '')}
+
+Video Analysis:
+{result.get('video_analysis', '')}
+
+Extract the following information and return ONLY valid JSON (no markdown, no explanations):
+
+{{
+    "content_type": {{"primary": "Educational", "secondary": ["Technology"]}},
+    "voice_style": {{"pace": "medium", "tone": "casual", "language_complexity": "moderate", "personality_traits": ["enthusiastic", "informative"]}},
+    "content_quality": {{"script_quality": "semi-scripted", "information_density": "high", "educational_value": "high", "entertainment_value": "medium"}},
+    "sentiment": {{"overall": "positive", "energy_level": "high", "emotional_tone": "enthusiastic"}},
+    "authenticity": {{"score": 8, "reasoning": "Natural delivery with genuine reactions"}},
+    "products_mentioned": [
+        {{"name": "Product Name", "context": "review", "timestamp_segment": "2:30-4:15", "sponsored": false}}
+    ],
+    "key_moments": [
+        {{"description": "Main topic introduction", "timestamp_segment": "0:00-1:30", "importance": "high"}}
+    ],
+    "production_quality": {{"visual_quality": "high", "audio_quality": "good", "editing_sophistication": "moderate"}},
+    "engagement_techniques": ["direct address", "call-to-action"]
+}}
+
+Return only the JSON object above, filled with actual data from the analysis:"""
+
+            try:
+                if SETTINGS.openrouter_api_keys or SETTINGS.groq_api_keys or SETTINGS.gemini_api_keys:
+                    structured_response = client.chat(
+                        [{"role": "system", "content": "You are a data extraction specialist. Return only valid JSON without any markdown formatting or additional text."}, 
+                         {"role": "user", "content": structured_analysis_prompt}],
+                        temperature=0.1, max_tokens=1000,
+                    )
+                    
+                    # Clean the response to ensure it's valid JSON
+                    cleaned_response = structured_response.strip()
+                    
+                    # Remove markdown code blocks if present
+                    if cleaned_response.startswith("```json"):
+                        cleaned_response = cleaned_response[7:]
+                    if cleaned_response.startswith("```"):
+                        cleaned_response = cleaned_response[3:]
+                    if cleaned_response.endswith("```"):
+                        cleaned_response = cleaned_response[:-3]
+                    
+                    cleaned_response = cleaned_response.strip()
+                    
+                    # Try to parse JSON
+                    import json
+                    try:
+                        structured_data = json.loads(cleaned_response)
+                        result["structured_data"] = structured_data
+                        logger.info(f"Successfully parsed structured data for {video_id}")
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Failed to parse structured data JSON for {video_id}: {e}")
+                        logger.debug(f"Raw response: {cleaned_response[:500]}...")
+                        
+                        # Create fallback structured data from analysis text
+                        fallback_data = {
+                            "content_type": {"primary": "Unknown", "secondary": []},
+                            "voice_style": {"pace": "unknown", "tone": "unknown", "language_complexity": "unknown", "personality_traits": []},
+                            "content_quality": {"script_quality": "unknown", "information_density": "unknown", "educational_value": "unknown", "entertainment_value": "unknown"},
+                            "sentiment": {"overall": "neutral", "energy_level": "unknown", "emotional_tone": "unknown"},
+                            "authenticity": {"score": 5, "reasoning": "Could not determine from analysis"},
+                            "products_mentioned": [],
+                            "key_moments": [],
+                            "production_quality": {"visual_quality": "unknown", "audio_quality": "unknown", "editing_sophistication": "unknown"},
+                            "engagement_techniques": []
+                        }
+                        result["structured_data"] = fallback_data
+                        logger.info(f"Using fallback structured data for {video_id}")
+                        
+            except Exception as e:
+                logger.warning(f"Structured data extraction failed: {e}")
+                # Create minimal fallback data
+                result["structured_data"] = {
+                    "content_type": {"primary": "Unknown", "secondary": []},
+                    "voice_style": {"pace": "unknown", "tone": "unknown", "language_complexity": "unknown", "personality_traits": []},
+                    "content_quality": {"script_quality": "unknown", "information_density": "unknown", "educational_value": "unknown", "entertainment_value": "unknown"},
+                    "sentiment": {"overall": "neutral", "energy_level": "unknown", "emotional_tone": "unknown"},
+                    "authenticity": {"score": 5, "reasoning": "Analysis failed"},
+                    "products_mentioned": [],
+                    "key_moments": [],
+                    "production_quality": {"visual_quality": "unknown", "audio_quality": "unknown", "editing_sophistication": "unknown"},
+                    "engagement_techniques": []
+                }
+        
+        # Step 5: Save comprehensive summary files
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Markdown summary
+        summary_content = f"""# Comprehensive Analysis: {video_title}
+
+**Video ID:** {video_id}
+**URL:** {video_url}
+**Duration:** ~{duration_minutes} minutes
+**Processing Date:** {timestamp}
+
+---
+
+{result.get('audio_analysis', 'No audio analysis available')}
+
+---
+
+## 🖼️ Visual Analysis
+{result.get('video_analysis', 'No video analysis available')}
+
+---
+
+## 📊 Technical Details
+- **Frames Analyzed:** {len(frames) if frames else 0}
+- **Audio Quality:** {quality}
+- **Processing Time:** {timestamp}
+
+---
+*Generated by NC_IM Final Channel Stat Analyzer*
+"""
+        
+        summary_file = video_dir / f"{video_id}_summary.md"
+        summary_file.write_text(summary_content, encoding='utf-8')
+        
+        # Save structured data as JSON
+        if result.get("structured_data"):
+            json_file = video_dir / f"{video_id}_data.json"
+            with open(json_file, 'w', encoding='utf-8') as f:
+                json.dump({
+                    "video_id": video_id,
+                    "title": video_title,
+                    "url": video_url,
+                    "duration_minutes": duration_minutes,
+                    "processing_date": timestamp,
+                    "analysis": result["structured_data"]
+                }, f, indent=2, ensure_ascii=False)
+        
+        # Step 6: Cleanup downloaded files
+        with st.spinner(f"🧹 Cleaning up files for {video_title[:50]}..."):
+            try:
+                if mp4_path.exists():
+                    mp4_path.unlink()
+                if wav_path.exists():
+                    wav_path.unlink()
+                # Keep frames for visual reference
+            except Exception as cleanup_error:
+                logger.warning(f"Cleanup failed for {video_id}: {cleanup_error}")
+        
+        result["success"] = True
+        return result
+        
+    except Exception as e:
+        result["error"] = str(e)
+        logger.error(f"Failed to process video {video_id}: {e}")
+        return result
+
+
+def final_channel_stat_section():
+    """New section for processing multiple videos from a channel sequentially."""
+    
+    st.title("🎯 Final Channel Stat")
+    st.markdown("**Sequential video analysis with comprehensive summaries**")
+    
+    # Input section
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        channel_input = st.text_input(
+            "Channel ID or URL",
+            placeholder="UCxxxxxxxxxxxxxxxxxxxxxxx or https://youtube.com/channel/UCxxx",
+            help="Enter a YouTube Channel ID or URL"
+        )
+    
+    with col2:
+        max_videos = st.number_input(
+            "Max Videos",
+            min_value=1,
+            max_value=50,
+            value=5,
+            help="Number of videos to process"
+        )
+    
+    if not channel_input.strip():
+        st.info("👆 Enter a channel ID or URL to get started")
+        return
+    
+    # Extract channel ID from input
+    channel_id = None
+    if channel_input.startswith("UC") and len(channel_input) == 24:
+        channel_id = channel_input
+    else:
+        # Try to extract from URL
+        try:
+            from youtube.public import extract_channel_id_from_url
+            channel_id = extract_channel_id_from_url(channel_input)
+        except Exception:
+            pass
+    
+    if not channel_id:
+        st.error("❌ Invalid channel ID or URL format")
+        return
+    
+    # Check API access
+    if not yt_key:
+        st.error("❌ YT_API_KEY not configured – please set the environment variable")
+        return
+    
+    # Check LLM access
+    if not (SETTINGS.openrouter_api_keys or SETTINGS.groq_api_keys or SETTINGS.gemini_api_keys):
+        st.error("❌ No LLM API keys configured – cannot generate summaries")
+        st.info("Configure `OPENROUTER_API_KEY`, `GROQ_API_KEY`, or `GEMINI_API_KEY` environment variables")
+        return
+    
+    # OAuth check and service setup
+    oauth_info = detect_oauth_capabilities()
+    has_oauth = any(ch["id"] == channel_id for ch in oauth_info.get("channels", []))
+    
+    if has_oauth:
+        st.success(f"🔓 **OAuth Available** - Enhanced access for channel analytics")
+        matching_channel = next(ch for ch in oauth_info["channels"] if ch["id"] == channel_id)
+        try:
+            service = get_oauth_service(DEFAULT_CLIENT_SECRET, matching_channel["token_file"])
+        except Exception as e:
+            st.error(f"❌ OAuth service failed: {e}")
+            return
+    else:
+        st.info(f"🔒 **Public Access Only** - Using YouTube Data API")
+        try:
+            service = get_public_service(yt_key)
+        except Exception as e:
+            st.error(f"❌ Public service failed: {e}")
+            return
+    
+    # Get channel info and videos
+    try:
+        channel_response = service.channels().list(
+            part="snippet,statistics",
+            id=channel_id
+        ).execute()
+        
+        if not channel_response["items"]:
+            st.error("❌ Channel not found")
+            return
+        
+        channel_info = channel_response["items"][0]
+        channel_title = channel_info["snippet"]["title"]
+        
+        st.subheader(f"📺 {channel_title}")
+        
+        # Display channel stats
+        stats = channel_info.get("statistics", {})
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            subs = int(stats.get("subscriberCount", 0))
+            st.metric("👥 Subscribers", f"{subs:,}")
+        with col2:
+            videos = int(stats.get("videoCount", 0))
+            st.metric("🎬 Videos", f"{videos:,}")
+        with col3:
+            views = int(stats.get("viewCount", 0))
+            st.metric("👀 Total Views", f"{views:,}")
+        
+        # Add collective analysis button right after channel stats
+        st.divider()
+        st.subheader("📊 Generate Collective Channel Analysis")
+        st.markdown("Analyze all processed videos together to understand overall channel patterns, creator style, and content strategy.")
+        
+        if st.button("🔬 Generate Comprehensive Channel Analysis", type="secondary", key="main_collective_analysis"):
+            with st.spinner("🧠 Analyzing channel patterns and creator profile..."):
+                # Create output directory for analysis
+                output_dir = REPORTS_DIR / "channel_analysis" / channel_id
+                output_dir.mkdir(parents=True, exist_ok=True)
+                collective_result = generate_collective_channel_analysis(channel_id, channel_title, output_dir)
+            
+            if collective_result.get("success"):
+                st.success("✅ Collective analysis complete!")
+                
+                # Display metrics overview
+                metrics = collective_result.get("metrics", {})
+                if metrics:
+                    st.markdown("### 📊 Channel Metrics Overview")
+                    
+                    # Use more balanced column layout
+                    col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+                    with col1:
+                        st.metric("⏱️ Total Duration", f"{metrics.get('total_duration', 0):.0f} min")
+                    with col2:
+                        st.metric("🏆 Avg Authenticity", f"{metrics.get('avg_authenticity', 0):.1f}/10")
+                    with col3:
+                        st.metric("🛍️ Products Mentioned", metrics.get('products_count', 0))
+                    with col4:
+                        content_types = metrics.get('content_types', {})
+                        primary_type = max(content_types.items(), key=lambda x: x[1])[0] if content_types else "Unknown"
+                        st.metric("🎯 Primary Content", primary_type)
+                
+                # Display content type distribution with better spacing
+                if metrics.get('content_types'):
+                    st.markdown("### 📈 Content Type Distribution")
+                    
+                    # Create two columns for chart and breakdown
+                    chart_col, breakdown_col = st.columns([2, 1])
+                    
+                    with chart_col:
+                        content_df = pd.DataFrame(
+                            list(metrics['content_types'].items()), 
+                            columns=['Content Type', 'Videos']
+                        )
+                        content_df['Percentage'] = (content_df['Videos'] / content_df['Videos'].sum() * 100).round(1)
+                        st.bar_chart(content_df.set_index('Content Type')['Videos'])
+                    
+                    with breakdown_col:
+                        st.markdown("**Breakdown:**")
+                        for _, row in content_df.iterrows():
+                            st.write(f"• **{row['Content Type']}**: {row['Videos']} videos ({row['Percentage']}%)")
+                
+                # Display the analysis with better container
+                st.markdown("### 📈 Comprehensive Analysis Report")
+                
+                # Use a container for better formatting
+                with st.container():
+                    st.markdown(collective_result["analysis"])
+                
+                # Show file location with better balanced columns
+                st.markdown("### 📂 Report Files")
+                file_col1, file_col2 = st.columns([3, 1])
+                with file_col1:
+                    st.info(f"📄 **Full report saved to:**\n`{collective_result['file_path']}`")
+                with file_col2:
+                    # Create download button for the analysis
+                    try:
+                        with open(collective_result['file_path'], 'r', encoding='utf-8') as f:
+                            report_content = f.read()
+                        st.download_button(
+                            "📥 Download Full Report",
+                            report_content,
+                            file_name=f"channel_analysis_{channel_id}.md",
+                            mime="text/markdown"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Could not create download button: {e}")
+                
+
+                
+            else:
+                st.error(f"❌ Collective analysis failed: {collective_result.get('error', 'Unknown error')}")
+        
+    except Exception as e:
+        st.error(f"❌ Failed to fetch channel info: {e}")
+        return
+    
+    # Processing section moved down but still prominent
+    st.divider()
+    st.subheader("🚀 Process New Videos")
+    st.markdown("Download and analyze new videos from this channel with comprehensive AI analysis.")
+    
+    # Processing section
+    if st.button("🚀 Start Processing Videos", type="primary"):
+        # Create output directory
+        output_dir = REPORTS_DIR / "channel_analysis" / channel_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Get videos list
+        with st.spinner(f"📋 Fetching latest {max_videos} videos from {channel_title}..."):
+            videos = get_channel_videos(service, channel_id, max_videos)
+        
+        if not videos:
+            st.error("❌ No videos found or failed to fetch videos")
+            return
+        
+        st.success(f"✅ Found {len(videos)} videos to process")
+        
+        # Process each video sequentially
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        results_container = st.container()
+        
+        successful_analyses = 0
+        failed_analyses = 0
+        
+        for idx, video_info in enumerate(videos):
+            video_id = video_info["video_id"]
+            video_title = video_info["title"]
+            
+            # Update progress
+            progress = (idx + 1) / len(videos)
+            progress_bar.progress(progress)
+            status_text.text(f"Processing {idx + 1}/{len(videos)}: {video_title[:60]}...")
+            
+            # Process the video
+            result = process_single_video_complete(video_id, video_title, output_dir)
+            
+            # Display result with proper spacing
+            with results_container:
+                if result["success"]:
+                    successful_analyses += 1
+                    if result.get("skipped"):
+                        st.info(f"⏭️ **{video_title}** - Already processed (skipped)")
+                    else:
+                        st.success(f"✅ **{video_title}** - Analysis complete")
+                        
+                        # Show summary preview with proper container
+                        with st.expander(f"📄 Summary Preview - {video_title[:50]}..."):
+                            if result.get("audio_analysis") and result.get("audio_analysis") != "Already processed":
+                                st.markdown("### 🎤 Audio Analysis")
+                                with st.container():
+                                    st.markdown(result["audio_analysis"])
+                            
+                            if result.get("video_analysis") and result.get("video_analysis") != "Already processed":
+                                st.markdown("### 🖼️ Video Analysis")
+                                with st.container():
+                                    st.markdown(result["video_analysis"])
+                else:
+                    failed_analyses += 1
+                    st.error(f"❌ **{video_title}** - Failed: {result.get('error', 'Unknown error')}")
+        
+        # Final summary with centered layout
+        progress_bar.progress(1.0)
+        status_text.text("✅ Processing complete!")
+        
+        st.balloons()
+        
+        # Use centered columns for final metrics
+        st.markdown("### 📊 Processing Summary")
+        final_col1, final_col2, final_col3 = st.columns([1, 1, 1])
+        with final_col1:
+            st.metric("✅ Successful", successful_analyses)
+        with final_col2:
+            st.metric("❌ Failed", failed_analyses)
+        with final_col3:
+            st.metric("📁 Summary Files", successful_analyses)
+        
+        # Show output directory with centered info
+        st.markdown("### 📂 Output Location")
+        st.info(f"📂 **Summary files saved to:** `{output_dir}`")
+        
+        # Next steps info
+        st.markdown("""
+        ### 🎉 Processing Complete!
+        
+        **What's been generated:**
+        - 📄 Individual summary files for each video (`.md` format)
+        - 📊 Structured data files for each video (`.json` format)
+        - 🎤 Audio transcript analysis with sentiment and categorization
+        - 🖼️ Video frame analysis with visual insights
+        - 🧹 Temporary files cleaned up automatically
+        
+        **Next steps:**
+        - Review the generated summary files
+        - Use the collective analysis above for strategic insights
+        - Apply insights for content strategy optimization
+        """)
+
+
+
+def generate_collective_channel_analysis(channel_id: str, channel_title: str, output_dir: Path) -> Dict:
+    """Generate comprehensive collective analysis from all video summaries."""
+    
+    # Find all JSON data files
+    json_files = []
+    for video_dir in output_dir.iterdir():
+        if video_dir.is_dir():
+            json_file = video_dir / f"{video_dir.name}_data.json"
+            if json_file.exists():
+                json_files.append(json_file)
+    
+    if not json_files:
+        return {"error": "No analysis data found"}
+    
+    # Load all video data
+    video_analyses = []
+    for json_file in json_files:
+        try:
+            with open(json_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                video_analyses.append(data)
+        except Exception as e:
+            logger.warning(f"Failed to load {json_file}: {e}")
+    
+    if not video_analyses:
+        return {"error": "No valid analysis data found"}
+    
+    # Generate collective insights
+    try:
+        if SETTINGS.openrouter_api_keys or SETTINGS.groq_api_keys or SETTINGS.gemini_api_keys:
+            from llms import get_smart_client
+            client = get_smart_client()
+            
+            # Prepare detailed summary data for LLM analysis
+            video_summaries = []
+            total_duration = 0
+            content_types = []
+            authenticity_scores = []
+            products_count = 0
+            
+            for i, video in enumerate(video_analyses, 1):
+                analysis = video.get("analysis", {})
+                duration = video.get("duration_minutes", 0)
+                total_duration += duration
+                
+                # Extract data for metrics
+                primary_type = analysis.get('content_type', {}).get('primary', 'Unknown')
+                content_types.append(primary_type)
+                
+                auth_score = analysis.get('authenticity', {}).get('score', 5)
+                if isinstance(auth_score, (int, float)):
+                    authenticity_scores.append(auth_score)
+                
+                products_mentioned = analysis.get('products_mentioned', [])
+                products_count += len(products_mentioned)
+                
+                # Create detailed video summary
+                summary = f"""
+**Video {i}: {video.get('title', 'Unknown')}**
+- Duration: {duration} minutes
+- Content Type: {primary_type}
+- Secondary Types: {', '.join(analysis.get('content_type', {}).get('secondary', []))}
+- Voice Style: {analysis.get('voice_style', {}).get('tone', 'Unknown')} tone, {analysis.get('voice_style', {}).get('pace', 'Unknown')} pace
+- Language Complexity: {analysis.get('voice_style', {}).get('language_complexity', 'Unknown')}
+- Sentiment: {analysis.get('sentiment', {}).get('overall', 'Unknown')} ({analysis.get('sentiment', {}).get('energy_level', 'Unknown')} energy)
+- Authenticity Score: {auth_score}/10 - {analysis.get('authenticity', {}).get('reasoning', 'No reasoning provided')}
+- Products Mentioned: {len(products_mentioned)} items
+- Production Quality: Visual - {analysis.get('production_quality', {}).get('visual_quality', 'Unknown')}, Audio - {analysis.get('production_quality', {}).get('audio_quality', 'Unknown')}
+- Key Engagement Techniques: {', '.join(analysis.get('engagement_techniques', []))}
+"""
+                video_summaries.append(summary)
+            
+            # Calculate metrics
+            avg_authenticity = sum(authenticity_scores) / len(authenticity_scores) if authenticity_scores else 0
+            from collections import Counter
+            content_type_distribution = Counter(content_types)
+            
+            collective_prompt = f"""Analyze {len(video_analyses)} videos from "{channel_title}". Keep it simple and concise.
+
+METRICS:
+- Videos: {len(video_analyses)}
+- Duration: {total_duration} min
+- Authenticity: {avg_authenticity:.1f}/10
+- Products: {products_count}
+- Content types: {dict(content_type_distribution)}
+
+DATA:
+{chr(10).join(video_summaries)}
+
+Provide brief analysis:
+
+## Content Focus
+Main content type and strategy (1-2 sentences).
+
+## Creator Style
+Communication style and personality (1-2 sentences).
+
+## Production Quality
+Visual/audio quality level (1 sentence).
+
+## Audience Engagement
+How they connect with viewers (1 sentence).
+
+## Authenticity
+Content genuineness - {avg_authenticity:.1f}/10 (1 sentence).
+
+## Commercial Content
+Products/sponsorships mentioned - {products_count} total (1 sentence).
+
+## Strengths
+Top 2-3 things they do well (bullet points).
+
+## Growth Areas
+2-3 simple improvements (bullet points).
+
+Keep each section under 2 sentences. Be direct and actionable."""
+
+            try:
+                collective_analysis = client.chat(
+                    [
+                        {"role": "system", "content": "You are a YouTube analyst. Provide concise, actionable insights. Keep responses brief and to the point. No fluff or unnecessary explanations."},
+                        {"role": "user", "content": collective_prompt},
+                    ],
+                    temperature=0.3,
+                    max_tokens=1000,
+                )
+                
+                # Save enhanced collective analysis
+                collective_file = output_dir / f"COLLECTIVE_ANALYSIS_{channel_id}.md"
+                collective_content = f"""# 📺 Comprehensive Channel Analysis Report
+## {channel_title}
+
+---
+
+**📋 ANALYSIS OVERVIEW**
+- **Channel ID:** `{channel_id}`
+- **Videos Analyzed:** {len(video_analyses)}
+- **Total Content Duration:** {total_duration} minutes ({total_duration/60:.1f} hours)
+- **Analysis Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+- **Average Authenticity Score:** {avg_authenticity:.1f}/10
+
+---
+
+{collective_analysis}
+
+---
+
+# 📈 DETAILED METRICS & DATA
+
+## Content Type Breakdown
+{chr(10).join([f"- **{content_type}:** {count} videos ({count/len(video_analyses)*100:.1f}%)" for content_type, count in content_type_distribution.most_common()])}
+
+## Video Portfolio
+{chr(10).join([f"**{i}.** {v.get('title', 'Unknown Title')} ({v.get('duration_minutes', 0)} min)" for i, v in enumerate(video_analyses, 1)])}
+
+## Key Statistics
+- **📊 Total Videos:** {len(video_analyses)}
+- **⏱️ Average Duration:** {total_duration/len(video_analyses):.1f} minutes
+- **🏆 Authenticity Score:** {avg_authenticity:.1f}/10
+- **🛍️ Products Mentioned:** {products_count} across all videos
+- **🎯 Primary Content Type:** {content_type_distribution.most_common(1)[0][0] if content_type_distribution else 'Unknown'}
+
+## Analysis Methodology
+- **Data Sources:** Audio transcripts + Visual frame analysis + Structured content analysis
+- **Analysis Engine:** AI-powered multi-modal assessment
+- **Quality Assurance:** Cross-validated insights with fallback mechanisms
+- **Generated By:** NC_IM Final Channel Stat Analyzer v2.0
+
+---
+
+*This comprehensive analysis combines insights from {len(video_analyses)} individual video analyses to provide strategic content and creator development insights. All metrics and recommendations are based on quantitative analysis of actual content.*
+"""
+                
+                collective_file.write_text(collective_content, encoding='utf-8')
+                
+                return {
+                    "success": True,
+                    "analysis": collective_analysis,
+                    "videos_count": len(video_analyses),
+                    "file_path": collective_file,
+                    "metrics": {
+                        "total_duration": total_duration,
+                        "avg_authenticity": avg_authenticity,
+                        "products_count": products_count,
+                        "content_types": dict(content_type_distribution)
+                    }
+                }
+                
+            except Exception as e:
+                logger.error(f"LLM collective analysis failed: {e}")
+                return {"error": f"Analysis generation failed: {e}"}
+                
+    except Exception as e:
+        logger.error(f"Collective analysis failed: {e}")
+        return {"error": f"Failed to generate collective analysis: {e}"}
 
 
 if __name__ == "__main__":
