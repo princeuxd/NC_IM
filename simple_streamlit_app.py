@@ -2,7 +2,7 @@ import os
 import json
 from pathlib import Path
 from typing import List, Dict
-from datetime import datetime
+from datetime import datetime, timezone
 
 import streamlit as st
 import pandas as pd
@@ -34,6 +34,7 @@ from auth.manager import (
     create_temp_client_secret_file,
 )
 from analysis.video_vision import summarise_frames
+from youtube.analytics import audience_retention  # Lazy import to avoid heavy deps on load
 
 # Set up logging to see what's happening
 logging.basicConfig(level=logging.INFO)
@@ -2284,6 +2285,9 @@ def channel_statistics_section():
     
     # Channel selection
     channels = oauth_info["channels"]
+    if not channels:
+        st.warning("No authenticated channels available. Use 'Creator Onboarding' to connect a channel first.")
+        return
     if len(channels) > 1:
         channel_names = [f"{ch['title']} ({ch['subscriber_count']:,} subs)" for ch in channels]
         selected_idx = st.selectbox("📺 Select Channel", range(len(channels)), format_func=lambda i: channel_names[i])
@@ -2320,7 +2324,7 @@ def channel_statistics_section():
         selected_period = st.selectbox(
             "Select time period for analytics",
             options=list(period_options.keys()),
-            index=2,  # Default to "Last 30 days"
+            index=5,  # Changed from 2 to 5
             help="Choose the time range for your analytics data"
         )
         
@@ -3331,7 +3335,7 @@ def display_simple_comment_analysis(analysis_results, video_id):
 
 def main():
     st.set_page_config(page_title="YouTube Creator OAuth Manager", layout="wide")
-    tab_onboard, tab_audio, tab_video, tab_stats, tab_channel, tab_public, tab_comments, tab_final_channel = st.tabs([
+    tab_onboard, tab_audio, tab_video, tab_stats, tab_channel, tab_public, tab_comments, tab_retention, tab_final_channel = st.tabs([
         "Creator Onboarding",
         "Audio Analyzer", 
         "Video Analyzer", 
@@ -3339,6 +3343,7 @@ def main():
         "Channel Analytics",
         "Public Channel Analysis",
         "Comments Analyzer",
+        "Audience Retention Analytics",
         "Final Channel Stat",
     ])
 
@@ -3362,7 +3367,10 @@ def main():
         
     with tab_comments:
         comments_analyzer_section()
-        
+    
+    with tab_retention:
+        audience_retention_analytics_section()
+    
     with tab_final_channel:
         final_channel_stat_section()
 
@@ -4488,6 +4496,326 @@ Keep each section under 2 sentences. Be direct and actionable."""
     except Exception as e:
         logger.error(f"Collective analysis failed: {e}")
         return {"error": f"Failed to generate collective analysis: {e}"}
+
+
+# ---------------------------------------------------------------------------
+# Audience Retention Analytics (placeholder)
+# ---------------------------------------------------------------------------
+
+def audience_retention_analytics_section():
+    """Audience Retention Analytics – requires OAuth with analytics scope for the target channel."""
+    import streamlit as st
+    from youtube.analytics import audience_retention  # Lazy import to avoid heavy deps on load
+    
+    # ------------------------------- UI INPUTS ---------------------------------
+    st.title("⏱️ Audience Retention Analytics")
+    st.markdown("Analyze how well viewers stay engaged across your latest videos.")
+    
+    col_t, col_p = st.columns([3, 1])
+    with col_t:
+        channel_input = st.text_input(
+            "Channel ID or URL",
+            placeholder="UCxxxxxxxxxxxxxxxxxxxxxxx or https://youtube.com/channel/UCxxx",
+            help="Enter the channel ID or URL associated with an onboarded OAuth token",
+        )
+    with col_p:
+        period_options = {
+            "Last 7 days": 7,
+            "Last 14 days": 14,
+            "Last 28 days": 28,
+            "Last 90 days": 90,
+            "Last 365 days": 365,
+            "All Time": None,
+        }
+        selected_period = st.selectbox("Period", list(period_options.keys()), index=5)
+        days_back = period_options[selected_period]
+    
+    col3, col4 = st.columns([1,1])
+    with col3:
+        max_videos = st.number_input(
+            "Max Videos",
+            min_value=1,
+            max_value=30,
+            value=5,
+            help="Number of recent uploads to analyse",
+        )
+    with col4:
+        analyze_sponsors = st.checkbox(
+            "🎯 Analyze Sponsored Content",
+            value=False,
+            help="Extract audio/video to detect sponsored mentions and correlate with retention"
+        )
+    
+    if not channel_input.strip():
+        st.info("👆 Enter a channel ID or URL to get started")
+        return
+    
+    # -------------------------- CHANNEL ID RESOLUTION --------------------------
+    channel_id = None
+    if channel_input.startswith("UC") and len(channel_input) == 24:
+        channel_id = channel_input
+    else:
+        try:
+            from youtube.public import extract_channel_id_from_url
+            channel_id = extract_channel_id_from_url(channel_input)
+        except Exception:
+            channel_id = None
+    
+    if not channel_id:
+        st.error("❌ Invalid channel ID or URL format")
+        return
+    
+    # --------------------------- OAUTH VALIDATION ------------------------------
+    oauth_info = detect_oauth_capabilities()
+    matching_channel = next((c for c in oauth_info.get("channels", []) if c["id"] == channel_id), None)
+    
+    if not matching_channel or not matching_channel.get("analytics_access"):
+        st.error("❌ OAuth with YouTube Analytics scope required for this channel")
+        st.info("Use the 'Creator Onboarding' tab to onboard the channel with the correct scopes.")
+        return
+    
+    # Build OAuth Data API service for the channel
+    try:
+        oauth_service = get_oauth_service(DEFAULT_CLIENT_SECRET, matching_channel["token_file"])
+    except Exception as e:
+        st.error(f"Failed to create OAuth service: {e}")
+        return
+    
+    # ---------------------------- CHANNEL SUMMARY -----------------------------
+    channel_stats = get_channel_stats(oauth_service, channel_id)
+    if channel_stats:
+        display_channel_stats(channel_stats)
+    else:
+        st.warning("Could not fetch channel metadata.")
+    
+    # --------------------------- VIDEO RETRIEVAL ------------------------------
+    videos = get_channel_videos(oauth_service, channel_id, max_videos=int(max_videos))
+    if not videos:
+        st.warning("No videos found for this channel or unable to retrieve uploads playlist.")
+        return
+    
+    st.markdown(f"### Selected Videos ({len(videos)}) – Audience Retention Curves ({selected_period})")
+    
+    # --------------------------- RETRY HELPER ---------------------------
+    def _fetch_retention_safe(v_id: str, video_published_at: str, max_attempts: int = 3):
+        """Call audience_retention with exponential-backoff retry to mitigate SSL timeouts."""
+        import time, logging
+        
+        # Calculate days_back for this specific video (like Video Statistics does)
+        actual_days_back = days_back
+        if days_back is None:  # "All Time" selected
+            try:
+                from datetime import datetime
+                if video_published_at:
+                    created_date = datetime.fromisoformat(video_published_at.replace("Z", "+00:00"))
+                    actual_days_back = (datetime.now(created_date.tzinfo) - created_date).days
+                else:
+                    actual_days_back = 3650
+            except Exception:
+                actual_days_back = 3650
+        
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return audience_retention(oauth_service, v_id, channel_id, days_back=actual_days_back)
+            except Exception as exc:
+                if attempt == max_attempts:
+                    raise
+                logging.warning(
+                    f"audience_retention failed for {v_id} (attempt {attempt}/{max_attempts}): {exc} – retrying…"
+                )
+                time.sleep(2 * attempt)
+    
+    # --------------------------- RETENTION ANALYSIS ---------------------------
+    for vid_info in videos:
+        video_id = vid_info["video_id"]
+        video_title = vid_info.get("title", video_id)
+        video_published_at = vid_info.get("published_at", "")
+        
+        with st.expander(f"📹 {video_title}", expanded=True):
+            with st.spinner("Fetching audience retention data …"):
+                try:
+                    retention_rows = _fetch_retention_safe(video_id, video_published_at)
+                except Exception as e:
+                    st.error(f"Failed to fetch retention data: {e}")
+                    continue
+            
+            if not retention_rows:
+                st.info("No retention data returned for this video (might be too new or private).")
+                continue
+            
+            analytics_stub = {"audience_retention": retention_rows}
+            display_audience_retention(analytics_stub)
+            
+            # Sponsored content analysis if enabled
+            if analyze_sponsors:
+                with st.spinner("🎯 Analyzing sponsored content..."):
+                    sponsored_data = detect_sponsored_content(video_id, video_title)
+                    
+                    if sponsored_data.get("error"):
+                        st.warning(f"Sponsored analysis failed: {sponsored_data['error']}")
+                    elif sponsored_data.get("total_mentions", 0) > 0:
+                        st.markdown("### 🎯 Sponsored Content Analysis")
+                        
+                        # Show sponsored mentions
+                        col1, col2 = st.columns([2, 1])
+                        with col1:
+                            st.markdown(f"**Found {sponsored_data['total_mentions']} sponsored mentions:**")
+                            for mention in sponsored_data["sponsored_mentions"]:
+                                mins, secs = divmod(int(mention["timestamp"]), 60)
+                                st.write(f"• **{mins:02d}:{secs:02d}** - {mention['text'][:100]}...")
+                        
+                        with col2:
+                            st.metric("Total Mentions", sponsored_data["total_mentions"])
+                        
+                        # Correlate with retention
+                        correlation_data = correlate_with_retention(sponsored_data, retention_rows)
+                        
+                        if correlation_data["insights"]:
+                            st.markdown("### 📊 Retention Impact Analysis")
+                            for insight in correlation_data["insights"]:
+                                st.write(insight)
+                        
+                        # Show LLM analysis if available
+                        if sponsored_data.get("llm_analysis"):
+                            with st.expander("🤖 AI Analysis", expanded=False):
+                                st.markdown(sponsored_data["llm_analysis"])
+                    else:
+                        st.info("No sponsored content detected in this video.")
+
+    # Optional: overall average retention across analysed videos
+    all_rows = []
+    for vid in videos:
+        try:
+            all_rows.extend(_fetch_retention_safe(vid["video_id"], vid.get("published_at", "")))
+        except Exception:
+            continue
+
+
+# Helper functions for sponsored content detection
+def detect_sponsored_content(video_id: str, video_title: str) -> dict:
+    """Analyze video for sponsored content mentions with timestamps."""
+    try:
+        from pathlib import Path
+        video_url = f"https://www.youtube.com/watch?v={video_id}"
+        out_dir = REPORTS_DIR / f"retention_analysis_{video_id}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Download video for analysis
+        duration_minutes = get_video_duration_from_url(video_url)
+        quality = auto_select_video_quality(duration_minutes)
+        
+        mp4_path = download_video(video_url, out_dir, quality=quality)
+        
+        # Extract audio and transcribe with timestamps
+        wav_path = extract_audio(mp4_path, out_dir / "audio.wav")
+        segments = transcribe_audio(wav_path)
+        
+        # Analyze transcript for sponsored content mentions
+        sponsored_mentions = []
+        sponsor_keywords = [
+            "sponsor", "sponsored", "ad", "advertisement", "promo", "promotion",
+            "affiliate", "partnership", "brand", "discount", "code", "link in description",
+            "thanks to", "brought to you by", "in collaboration with", "partnered with"
+        ]
+        
+        for segment in segments:
+            text = segment.get("text", "").lower()
+            start_time = segment.get("start", 0)
+            
+            for keyword in sponsor_keywords:
+                if keyword in text:
+                    sponsored_mentions.append({
+                        "timestamp": start_time,
+                        "text": segment.get("text", ""),
+                        "keyword": keyword,
+                        "confidence": "high" if keyword in ["sponsor", "sponsored", "ad"] else "medium"
+                    })
+                    break
+        
+        # Use LLM for deeper analysis if available
+        llm_analysis = None
+        if SETTINGS.openrouter_api_keys or SETTINGS.groq_api_keys or SETTINGS.gemini_api_keys:
+            try:
+                from llms import get_smart_client
+                client = get_smart_client()
+                
+                full_text = "\n".join(s.get("text", "") for s in segments)
+                prompt = f"""Analyze this video transcript for sponsored content, product placements, and advertisements.
+
+For each sponsored mention found, provide:
+1. Timestamp (approximate from context)
+2. Product/brand name
+3. Type (sponsor mention, product placement, affiliate link, etc.)
+4. Confidence level (high/medium/low)
+
+Transcript: {full_text[:8000]}"""
+                
+                llm_analysis = client.chat([
+                    {"role": "system", "content": "You are an expert at detecting sponsored content in video transcripts."},
+                    {"role": "user", "content": prompt}
+                ], temperature=0.2, max_tokens=1000)
+            except Exception as e:
+                logger.warning(f"LLM analysis failed: {e}")
+        
+        # Cleanup temporary files
+        try:
+            if mp4_path.exists(): mp4_path.unlink()
+            if wav_path.exists(): wav_path.unlink()
+        except Exception:
+            pass
+        
+        return {
+            "video_id": video_id,
+            "sponsored_mentions": sponsored_mentions,
+            "llm_analysis": llm_analysis,
+            "total_mentions": len(sponsored_mentions)
+        }
+        
+    except Exception as e:
+        logger.error(f"Sponsored content detection failed for {video_id}: {e}")
+        return {"video_id": video_id, "error": str(e), "sponsored_mentions": [], "total_mentions": 0}
+
+def correlate_with_retention(sponsored_data: dict, retention_rows: list) -> dict:
+    """Correlate sponsored content timestamps with audience retention patterns."""
+    if not retention_rows or not sponsored_data.get("sponsored_mentions"):
+        return {"correlations": [], "insights": []}
+    
+    correlations = []
+    insights = []
+    
+    # Convert retention data to percentage points
+    retention_points = [(float(row[0]) * 100, float(row[1]) * 100) for row in retention_rows]
+    
+    for mention in sponsored_data["sponsored_mentions"]:
+        timestamp_pct = (mention["timestamp"] / (len(retention_points) * 10)) * 100  # Rough estimation
+        
+        # Find closest retention point
+        closest_retention = min(retention_points, key=lambda x: abs(x[0] - timestamp_pct))
+        
+        # Check for retention drops around this timestamp
+        retention_change = None
+        for i, (time_pct, retention_pct) in enumerate(retention_points):
+            if abs(time_pct - timestamp_pct) <= 5:  # Within 5% of video
+                if i > 0:
+                    prev_retention = retention_points[i-1][1]
+                    retention_change = retention_pct - prev_retention
+                break
+        
+        correlation = {
+            "mention": mention,
+            "estimated_video_position": f"{timestamp_pct:.1f}%",
+            "retention_at_point": f"{closest_retention[1]:.1f}%",
+            "retention_change": f"{retention_change:+.1f}%" if retention_change else "N/A"
+        }
+        correlations.append(correlation)
+        
+        # Generate insights
+        if retention_change and retention_change < -5:
+            insights.append(f"⚠️ Significant drop ({retention_change:+.1f}%) near sponsored mention: '{mention['text'][:50]}...'")
+        elif retention_change and retention_change > 2:
+            insights.append(f"📈 Retention increased ({retention_change:+.1f}%) during: '{mention['text'][:50]}...'")
+    
+    return {"correlations": correlations, "insights": insights}
 
 
 if __name__ == "__main__":
