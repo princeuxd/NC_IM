@@ -1,0 +1,1083 @@
+"""
+Enhanced Channel Analysis Business Logic Module
+
+This module provides a polished, efficient, and comprehensive channel analysis system
+with improved error handling, caching, and better user experience.
+"""
+
+import os
+import json
+import logging
+import asyncio
+from pathlib import Path
+from typing import List, Dict, Optional, Tuple, Any
+from datetime import datetime, timezone, timedelta
+from collections import Counter, defaultdict
+from dataclasses import dataclass, asdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
+import hashlib
+
+import pandas as pd
+
+from youtube.oauth import get_service as get_oauth_service
+from youtube.public import get_service as get_public_service, extract_channel_id_from_url
+from analysis.video_frames import (
+    extract_video_id,
+    download_video,
+    extract_frames,
+    get_video_duration_from_url,
+    auto_select_video_quality,
+)
+from analysis.audio import extract_audio, transcribe as transcribe_audio
+from analysis.video_vision import summarise_frames
+from llms import get_smart_client
+from config.settings import SETTINGS
+from auth.manager import list_token_files as _list_token_files
+
+logger = logging.getLogger(__name__)
+
+# Constants
+ROOT = Path(__file__).resolve().parent.parent
+REPORTS_DIR = ROOT / "reports"
+REPORTS_DIR.mkdir(exist_ok=True, parents=True)
+
+TOKENS_DIR = ROOT / "tokens"
+TOKENS_DIR.mkdir(exist_ok=True, parents=True)
+
+DEFAULT_CLIENT_SECRET = ROOT / "client_secret.json"
+
+
+@dataclass
+class VideoAnalysisResult:
+    """Structured result for individual video analysis."""
+    video_id: str
+    title: str
+    url: str
+    duration_minutes: int
+    success: bool = False
+    skipped: bool = False
+    error: Optional[str] = None
+    
+    # Analysis results
+    audio_analysis: Optional[str] = None
+    video_analysis: Optional[str] = None
+    structured_data: Optional[Dict[str, Any]] = None
+    
+    # File paths
+    summary_file: Optional[Path] = None
+    data_file: Optional[Path] = None
+    
+    # Processing metadata
+    processing_time_seconds: Optional[float] = None
+    processing_date: Optional[str] = None
+
+
+@dataclass
+class ChannelMetrics:
+    """Channel-level metrics and statistics."""
+    total_videos: int
+    processed_videos: int
+    total_duration_minutes: int
+    avg_authenticity_score: float
+    content_type_distribution: Dict[str, int]
+    products_mentioned_total: int
+    avg_production_quality: Dict[str, float]
+    engagement_techniques_used: List[str]
+    sentiment_distribution: Dict[str, float]
+
+
+@dataclass
+class CollectiveAnalysisResult:
+    """Result of collective channel analysis."""
+    success: bool
+    channel_id: str
+    channel_title: str
+    analysis_text: str
+    metrics: ChannelMetrics
+    file_path: Optional[Path] = None
+    error: Optional[str] = None
+
+
+class EnhancedChannelAnalysisService:
+    """Enhanced service class for comprehensive channel analysis."""
+    
+    def __init__(self, yt_api_key: str):
+        self.yt_api_key = yt_api_key
+        self.oauth_info = self._detect_oauth_capabilities()
+        self._cache = {}
+        self._processing_stats = defaultdict(int)
+    
+    def _detect_oauth_capabilities(self) -> Dict:
+        """Detect available OAuth credentials and their capabilities."""
+        token_files = _list_token_files()
+        oauth_info = {
+            "available": len(token_files) > 0,
+            "channels": [],
+            "analytics_access": False,
+            "private_access": False,
+        }
+
+        for token_file in token_files:
+            try:
+                # Test OAuth service
+                oauth_service = get_oauth_service(DEFAULT_CLIENT_SECRET, token_file)
+
+                # Get channel info
+                me = (
+                    oauth_service.channels()
+                    .list(part="id,snippet,statistics", mine=True)
+                    .execute()
+                )
+                if me["items"]:
+                    channel_info = me["items"][0]
+                    channel_id = channel_info["id"]
+
+                    # Test analytics access
+                    analytics_available = self._test_analytics_access(oauth_service, channel_id)
+
+                    oauth_info["channels"].append(
+                        {
+                            "id": channel_id,
+                            "title": channel_info["snippet"]["title"],
+                            "token_file": token_file,
+                            "analytics_access": analytics_available,
+                            "subscriber_count": int(
+                                channel_info["statistics"].get("subscriberCount", 0)
+                            ),
+                            "video_count": int(
+                                channel_info["statistics"].get("videoCount", 0)
+                            ),
+                        }
+                    )
+
+                    if analytics_available:
+                        oauth_info["analytics_access"] = True
+                        oauth_info["private_access"] = True
+
+            except Exception as e:
+                logger.error(f"OAuth detection failed for {token_file}: {e}")
+
+        return oauth_info
+    
+    def _test_analytics_access(self, oauth_service, channel_id: str) -> bool:
+        """Test if analytics access is available for a channel."""
+        try:
+            from googleapiclient.discovery import build
+            
+            analytics_service = build(
+                "youtubeAnalytics",
+                "v2",
+                credentials=oauth_service._http.credentials,
+            )
+            
+            # Test with a simple query
+            end_date = datetime.now().date()
+            start_date = end_date - timedelta(days=30)
+
+            test_query = (
+                analytics_service.reports()
+                .query(
+                    ids=f"channel=={channel_id}",
+                    startDate=start_date.strftime("%Y-%m-%d"),
+                    endDate=end_date.strftime("%Y-%m-%d"),
+                    metrics="views",
+                    maxResults=1,
+                )
+                .execute()
+            )
+            return True
+        except Exception:
+            return False
+    
+    @lru_cache(maxsize=128)
+    def extract_channel_id(self, channel_input: str) -> Optional[str]:
+        """Extract channel ID from various input formats with caching."""
+        if not channel_input.strip():
+            return None
+            
+        # Direct channel ID
+        if channel_input.startswith("UC") and len(channel_input) == 24:
+            return channel_input
+        
+        # Try to extract from URL
+        try:
+            return extract_channel_id_from_url(channel_input)
+        except Exception:
+            return None
+    
+    def get_service_for_channel(self, channel_id: str) -> Tuple[object, str]:
+        """Get the appropriate service (OAuth or public) for a channel."""
+        has_oauth = any(ch["id"] == channel_id for ch in self.oauth_info.get("channels", []))
+        
+        if has_oauth:
+            matching_channel = next(ch for ch in self.oauth_info["channels"] if ch["id"] == channel_id)
+            try:
+                service = get_oauth_service(DEFAULT_CLIENT_SECRET, matching_channel["token_file"])
+                return service, "oauth"
+            except Exception as e:
+                logger.error(f"OAuth service failed: {e}")
+                # Fallback to public service
+                service = get_public_service(self.yt_api_key)
+                return service, "public_fallback"
+        else:
+            service = get_public_service(self.yt_api_key)
+            return service, "public"
+    
+    def get_channel_info(self, service: object, channel_id: str) -> Dict:
+        """Fetch channel information and statistics with caching."""
+        cache_key = f"channel_info_{channel_id}"
+        
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        
+        try:
+            channel_response = service.channels().list(
+                part="snippet,statistics,brandingSettings",
+                id=channel_id
+            ).execute()
+            
+            if not channel_response["items"]:
+                raise ValueError("Channel not found")
+            
+            result = channel_response["items"][0]
+            self._cache[cache_key] = result
+            return result
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch channel info: {e}")
+            raise
+    
+    def get_channel_videos(self, service: object, channel_id: str, max_videos: int = 50) -> List[Dict]:
+        """Fetch videos from a channel with improved error handling and sorting."""
+        try:
+            # Get uploads playlist ID
+            channel_response = service.channels().list(
+                part="contentDetails",
+                id=channel_id
+            ).execute()
+            
+            if not channel_response["items"]:
+                return []
+            
+            uploads_playlist_id = channel_response["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
+            
+            # Get videos from uploads playlist
+            videos = []
+            next_page_token = None
+            
+            while len(videos) < max_videos:
+                playlist_response = service.playlistItems().list(
+                    part="snippet",
+                    playlistId=uploads_playlist_id,
+                    maxResults=min(50, max_videos - len(videos)),
+                    pageToken=next_page_token
+                ).execute()
+                
+                for item in playlist_response["items"]:
+                    video_id = item["snippet"]["resourceId"]["videoId"]
+                    video_title = item["snippet"]["title"]
+                    published_at = item["snippet"]["publishedAt"]
+                    
+                    # Skip private or deleted videos
+                    if video_title in ["Private video", "Deleted video"]:
+                        continue
+                    
+                    videos.append({
+                        "video_id": video_id,
+                        "title": video_title,
+                        "published_at": published_at,
+                        "thumbnail": item["snippet"]["thumbnails"].get("high", {}).get("url")
+                    })
+                
+                next_page_token = playlist_response.get("nextPageToken")
+                if not next_page_token:
+                    break
+            
+            # Sort by published date (newest first)
+            videos.sort(key=lambda x: x["published_at"], reverse=True)
+            return videos[:max_videos]
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch channel videos: {e}")
+            return []
+    
+    def process_single_video(self, video_id: str, video_title: str, output_base_dir: Path, 
+                           use_enhanced_analysis: bool = True) -> VideoAnalysisResult:
+        """Process a single video with enhanced analysis and better error handling."""
+        
+        start_time = datetime.now()
+        video_url = f"https://www.youtube.com/watch?v={video_id}"
+        video_dir = output_base_dir / video_id
+        video_dir.mkdir(parents=True, exist_ok=True)
+        
+        # File paths
+        summary_file = video_dir / f"{video_id}_summary.md"
+        json_file = video_dir / f"{video_id}_data.json"
+        
+        # Check if already processed
+        if summary_file.exists() and json_file.exists():
+            try:
+                with open(json_file, 'r', encoding='utf-8') as f:
+                    existing_data = json.load(f)
+                
+                logger.info(f"Video {video_id} already processed, loading existing data...")
+                return VideoAnalysisResult(
+                    video_id=video_id,
+                    title=video_title,
+                    url=video_url,
+                    duration_minutes=existing_data.get("duration_minutes", 0),
+                    success=True,
+                    skipped=True,
+                    structured_data=existing_data.get("analysis"),
+                    summary_file=summary_file,
+                    data_file=json_file,
+                    processing_date=existing_data.get("processing_date")
+                )
+            except Exception as e:
+                logger.warning(f"Failed to load existing data for {video_id}: {e}")
+        
+        # Initialize result
+        result = VideoAnalysisResult(
+            video_id=video_id,
+            title=video_title,
+            url=video_url,
+            duration_minutes=0
+        )
+        
+        try:
+            # Step 1: Download video with appropriate quality
+            result.duration_minutes = get_video_duration_from_url(video_url)
+            quality = auto_select_video_quality(result.duration_minutes)
+            
+            # Skip extremely long videos to avoid processing issues
+            if result.duration_minutes > 180:  # 3 hours
+                result.error = f"Video too long ({result.duration_minutes} minutes). Skipping to avoid processing issues."
+                result.skipped = True
+                return result
+            
+            mp4_path = download_video(video_url, video_dir, quality=quality)
+            
+            # Step 2: Enhanced Audio Analysis
+            if use_enhanced_analysis:
+                result.audio_analysis = self._enhanced_audio_analysis(
+                    mp4_path, video_dir, video_title, result.duration_minutes
+                )
+            else:
+                result.audio_analysis = self._basic_audio_analysis(mp4_path, video_dir)
+            
+            # Step 3: Enhanced Video Analysis
+            if use_enhanced_analysis:
+                result.video_analysis = self._enhanced_video_analysis(
+                    mp4_path, video_dir, video_title
+                )
+            else:
+                result.video_analysis = self._basic_video_analysis(mp4_path, video_dir)
+            
+            # Step 4: Generate structured data
+            if result.audio_analysis and result.video_analysis:
+                result.structured_data = self._extract_structured_data(
+                    result.audio_analysis, result.video_analysis, video_title, result.duration_minutes
+                )
+            
+            # Step 5: Save results
+            self._save_analysis_results(result, video_dir)
+            
+            # Step 6: Cleanup
+            self._cleanup_temp_files(mp4_path, video_dir)
+            
+            # Calculate processing time
+            processing_time = (datetime.now() - start_time).total_seconds()
+            result.processing_time_seconds = processing_time
+            result.processing_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            result.success = True
+            
+            self._processing_stats["successful"] += 1
+            logger.info(f"Successfully processed video {video_id} in {processing_time:.1f}s")
+            
+            return result
+            
+        except Exception as e:
+            result.error = str(e)
+            result.success = False
+            self._processing_stats["failed"] += 1
+            logger.error(f"Failed to process video {video_id}: {e}")
+            return result
+    
+    def _enhanced_audio_analysis(self, mp4_path: Path, video_dir: Path, 
+                                video_title: str, duration_minutes: int) -> Optional[str]:
+        """Perform enhanced audio analysis with comprehensive insights."""
+        try:
+            # Extract audio
+            wav_path = extract_audio(mp4_path, video_dir / "audio.wav")
+            
+            # Transcribe
+            segments = transcribe_audio(wav_path)
+            if not segments:
+                return "No transcription available"
+            
+            full_transcript = "\n".join(s.get("text", "") for s in segments)
+            
+            if not (SETTINGS.openrouter_api_keys or SETTINGS.groq_api_keys or SETTINGS.gemini_api_keys):
+                return f"Basic transcription completed. Transcript length: {len(full_transcript)} characters."
+            
+            client = get_smart_client()
+            
+            enhanced_prompt = f"""Analyze this video content comprehensively:
+
+## CONTENT ANALYSIS
+**Title:** {video_title}
+**Duration:** {duration_minutes} minutes
+
+**TRANSCRIPT:**
+{full_transcript[:12000]}
+
+Provide analysis in these sections:
+
+### 🎯 CONTENT CLASSIFICATION
+- Primary content type (Tutorial, Review, Vlog, Gaming, etc.)
+- Secondary categories
+- Target audience
+
+### 🎤 COMMUNICATION STYLE
+- Speaking pace and tone
+- Language complexity
+- Personality traits
+- Engagement approach
+
+### 📊 CONTENT QUALITY
+- Information density
+- Structure and flow
+- Educational vs entertainment value
+- Production professionalism
+
+### 💭 SENTIMENT & AUTHENTICITY
+- Overall sentiment and energy
+- Authenticity score (1-10) with reasoning
+- Genuine vs scripted feel
+
+### 🛍️ COMMERCIAL CONTENT
+- Products/brands mentioned
+- Sponsorship indicators
+- Commercial context
+
+### ⭐ KEY INSIGHTS
+- Most valuable takeaways
+- Unique selling points
+- Potential improvements
+
+Keep analysis concise but comprehensive."""
+
+            try:
+                response = client.chat(
+                    [
+                        {"role": "system", "content": "You are an expert content analyst. Provide structured, actionable insights."},
+                        {"role": "user", "content": enhanced_prompt},
+                    ],
+                    temperature=0.3,
+                    max_tokens=1200,
+                )
+                return response
+            except Exception as e:
+                logger.warning(f"Enhanced audio analysis failed: {e}")
+                return f"Basic analysis: {len(full_transcript)} characters transcribed. LLM analysis failed: {str(e)}"
+                
+        except Exception as e:
+            logger.error(f"Audio analysis failed: {e}")
+            return f"Audio analysis failed: {str(e)}"
+    
+    def _basic_audio_analysis(self, mp4_path: Path, video_dir: Path) -> Optional[str]:
+        """Perform basic audio analysis as fallback."""
+        try:
+            wav_path = extract_audio(mp4_path, video_dir / "audio.wav")
+            segments = transcribe_audio(wav_path)
+            
+            if not segments:
+                return "No transcription available"
+            
+            full_transcript = "\n".join(s.get("text", "") for s in segments)
+            return f"Transcription completed. Length: {len(full_transcript)} characters.\n\nTranscript:\n{full_transcript[:1000]}..."
+            
+        except Exception as e:
+            return f"Basic audio analysis failed: {str(e)}"
+    
+    def _enhanced_video_analysis(self, mp4_path: Path, video_dir: Path, video_title: str) -> Optional[str]:
+        """Perform enhanced video analysis with visual insights."""
+        try:
+            frames = extract_frames(mp4_path, video_dir / "frames", every_sec=15)
+            if not frames:
+                return "No frames extracted for analysis"
+            
+            # Limit frames for processing efficiency
+            frames = frames[:10]
+            
+            if not (SETTINGS.openrouter_api_keys or SETTINGS.groq_api_keys or SETTINGS.gemini_api_keys):
+                return f"Basic frame extraction completed. {len(frames)} frames available."
+            
+            enhanced_prompt = f"""Analyze these video frames for "{video_title}":
+
+### 🎥 VISUAL PRODUCTION ANALYSIS
+- Video quality and production value
+- Lighting, framing, and composition
+- Setting and environment
+- Visual branding elements
+
+### 📱 CONTENT PRESENTATION
+- Graphics and text overlays
+- Product placement and visibility
+- Visual storytelling techniques
+- Screen time management
+
+### 🏢 BRANDING & PRODUCTS
+- Logos and brand visibility
+- Product demonstrations
+- Commercial elements
+- Professional vs casual presentation
+
+### 🎨 AESTHETIC QUALITY
+- Color scheme and consistency
+- Editing sophistication
+- Visual engagement techniques
+- Overall production standards
+
+Analyze {len(frames)} frames spanning the video duration."""
+
+            try:
+                response = summarise_frames(frames, prompt=enhanced_prompt)
+                return response
+            except Exception as e:
+                logger.warning(f"Enhanced video analysis failed: {e}")
+                return f"Basic frame analysis: {len(frames)} frames processed. Enhanced analysis failed: {str(e)}"
+                
+        except Exception as e:
+            logger.error(f"Video analysis failed: {e}")
+            return f"Video analysis failed: {str(e)}"
+    
+    def _basic_video_analysis(self, mp4_path: Path, video_dir: Path) -> Optional[str]:
+        """Perform basic video analysis as fallback."""
+        try:
+            frames = extract_frames(mp4_path, video_dir / "frames", every_sec=20)
+            if not frames:
+                return "No frames available for analysis"
+            
+            return f"Basic frame extraction completed. {len(frames)} frames available for review."
+            
+        except Exception as e:
+            return f"Basic video analysis failed: {str(e)}"
+    
+    def _extract_structured_data(self, audio_analysis: str, video_analysis: str, 
+                                video_title: str, duration_minutes: int) -> Dict[str, Any]:
+        """Extract structured data from analysis results."""
+        try:
+            if not (SETTINGS.openrouter_api_keys or SETTINGS.groq_api_keys or SETTINGS.gemini_api_keys):
+                return self._create_fallback_structured_data(video_title, duration_minutes)
+            
+            client = get_smart_client()
+            
+            extraction_prompt = f"""Extract structured data from this analysis in JSON format:
+
+**AUDIO ANALYSIS:**
+{audio_analysis[:3000]}
+
+**VIDEO ANALYSIS:**
+{video_analysis[:2000]}
+
+Return valid JSON with this structure:
+{{
+    "content_type": {{"primary": "Tutorial", "secondary": ["Technology"]}},
+    "communication": {{"pace": "medium", "tone": "professional", "authenticity_score": 8}},
+    "quality": {{"production": "high", "information_density": "high", "entertainment_value": "medium"}},
+    "sentiment": {{"overall": "positive", "energy": "high"}},
+    "commercial": {{"products_mentioned": 2, "sponsorship_indicators": false}},
+    "key_insights": ["Main insight 1", "Main insight 2"],
+    "recommendations": ["Improvement 1", "Improvement 2"]
+}}
+
+Only return the JSON object, no additional text."""
+
+            try:
+                response = client.chat(
+                    [{"role": "system", "content": "Return only valid JSON without markdown formatting."}, 
+                     {"role": "user", "content": extraction_prompt}],
+                    temperature=0.1, 
+                    max_tokens=800
+                )
+                
+                # Clean and parse JSON
+                cleaned = response.strip()
+                if cleaned.startswith("```"):
+                    cleaned = cleaned.split("```")[1]
+                if cleaned.startswith("json"):
+                    cleaned = cleaned[4:]
+                
+                return json.loads(cleaned.strip())
+                
+            except json.JSONDecodeError as e:
+                logger.warning(f"JSON parsing failed: {e}")
+                return self._create_fallback_structured_data(video_title, duration_minutes)
+                
+        except Exception as e:
+            logger.error(f"Structured data extraction failed: {e}")
+            return self._create_fallback_structured_data(video_title, duration_minutes)
+    
+    def _create_fallback_structured_data(self, video_title: str, duration_minutes: int) -> Dict[str, Any]:
+        """Create fallback structured data when extraction fails."""
+        return {
+            "content_type": {"primary": "Unknown", "secondary": []},
+            "communication": {"pace": "unknown", "tone": "unknown", "authenticity_score": 5},
+            "quality": {"production": "unknown", "information_density": "unknown", "entertainment_value": "unknown"},
+            "sentiment": {"overall": "neutral", "energy": "unknown"},
+            "commercial": {"products_mentioned": 0, "sponsorship_indicators": False},
+            "key_insights": [f"Analysis for '{video_title}' ({duration_minutes} min)"],
+            "recommendations": ["Complete analysis requires LLM access"]
+        }
+    
+    def _save_analysis_results(self, result: VideoAnalysisResult, video_dir: Path) -> None:
+        """Save analysis results to files."""
+        try:
+            # Save markdown summary
+            summary_content = f"""# Video Analysis: {result.title}
+
+**Video ID:** {result.video_id}
+**URL:** {result.url}
+**Duration:** {result.duration_minutes} minutes
+**Processing Date:** {result.processing_date}
+
+---
+
+## 🎤 Audio Analysis
+{result.audio_analysis or 'No audio analysis available'}
+
+---
+
+## 🎥 Video Analysis
+{result.video_analysis or 'No video analysis available'}
+
+---
+
+## 📊 Processing Info
+- **Success:** {result.success}
+- **Processing Time:** {result.processing_time_seconds:.1f}s
+- **Quality:** Enhanced analysis
+"""
+            
+            summary_file = video_dir / f"{result.video_id}_summary.md"
+            summary_file.write_text(summary_content, encoding='utf-8')
+            result.summary_file = summary_file
+            
+            # Save JSON data
+            if result.structured_data:
+                json_data = {
+                    "video_id": result.video_id,
+                    "title": result.title,
+                    "url": result.url,
+                    "duration_minutes": result.duration_minutes,
+                    "processing_date": result.processing_date,
+                    "processing_time_seconds": result.processing_time_seconds,
+                    "analysis": result.structured_data
+                }
+                
+                json_file = video_dir / f"{result.video_id}_data.json"
+                with open(json_file, 'w', encoding='utf-8') as f:
+                    json.dump(json_data, f, indent=2, ensure_ascii=False)
+                result.data_file = json_file
+            
+        except Exception as e:
+            logger.error(f"Failed to save analysis results: {e}")
+    
+    def _cleanup_temp_files(self, mp4_path: Path, video_dir: Path) -> None:
+        """Clean up temporary files while preserving important data."""
+        try:
+            # Remove video file
+            if mp4_path.exists():
+                mp4_path.unlink()
+            
+            # Remove audio file
+            audio_path = video_dir / "audio.wav"
+            if audio_path.exists():
+                audio_path.unlink()
+            
+            # Keep frames for visual reference (they're small)
+            
+        except Exception as e:
+            logger.warning(f"Cleanup failed: {e}")
+    
+    def generate_collective_analysis(self, channel_id: str, channel_title: str, 
+                                   output_dir: Path) -> CollectiveAnalysisResult:
+        """Generate comprehensive collective analysis with enhanced metrics."""
+        
+        # Find all analysis data files
+        json_files = []
+        for video_dir in output_dir.iterdir():
+            if video_dir.is_dir():
+                json_file = video_dir / f"{video_dir.name}_data.json"
+                if json_file.exists():
+                    json_files.append(json_file)
+        
+        if not json_files:
+            return CollectiveAnalysisResult(
+                success=False,
+                channel_id=channel_id,
+                channel_title=channel_title,
+                analysis_text="",
+                metrics=ChannelMetrics(0, 0, 0, 0, {}, 0, {}, [], {}),
+                error="No analysis data found. Process some videos first."
+            )
+        
+        # Load and process video data
+        video_analyses = []
+        for json_file in json_files:
+            try:
+                with open(json_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    video_analyses.append(data)
+            except Exception as e:
+                logger.warning(f"Failed to load {json_file}: {e}")
+        
+        if not video_analyses:
+            return CollectiveAnalysisResult(
+                success=False,
+                channel_id=channel_id,
+                channel_title=channel_title,
+                analysis_text="",
+                metrics=ChannelMetrics(0, 0, 0, 0, {}, 0, {}, [], {}),
+                error="No valid analysis data found"
+            )
+        
+        # Calculate comprehensive metrics
+        metrics = self._calculate_channel_metrics(video_analyses)
+        
+        # Generate LLM analysis
+        analysis_text = self._generate_llm_collective_analysis(
+            channel_title, video_analyses, metrics
+        )
+        
+        # Save comprehensive report
+        file_path = self._save_collective_report(
+            channel_id, channel_title, analysis_text, metrics, video_analyses, output_dir
+        )
+        
+        return CollectiveAnalysisResult(
+            success=True,
+            channel_id=channel_id,
+            channel_title=channel_title,
+            analysis_text=analysis_text,
+            metrics=metrics,
+            file_path=file_path
+        )
+    
+    def _calculate_channel_metrics(self, video_analyses: List[Dict]) -> ChannelMetrics:
+        """Calculate comprehensive channel metrics from video analyses."""
+        
+        total_videos = len(video_analyses)
+        total_duration = sum(v.get("duration_minutes", 0) for v in video_analyses)
+        
+        # Extract structured data
+        structured_analyses = []
+        for video in video_analyses:
+            analysis = video.get("analysis", {})
+            if analysis:
+                structured_analyses.append(analysis)
+        
+        if not structured_analyses:
+            return ChannelMetrics(
+                total_videos=total_videos,
+                processed_videos=0,
+                total_duration_minutes=total_duration,
+                avg_authenticity_score=0,
+                content_type_distribution={},
+                products_mentioned_total=0,
+                avg_production_quality={},
+                engagement_techniques_used=[],
+                sentiment_distribution={}
+            )
+        
+        # Content type distribution
+        content_types = []
+        for analysis in structured_analyses:
+            primary = analysis.get("content_type", {}).get("primary", "Unknown")
+            content_types.append(primary)
+        
+        content_distribution = dict(Counter(content_types))
+        
+        # Authenticity scores
+        auth_scores = []
+        for analysis in structured_analyses:
+            score = analysis.get("communication", {}).get("authenticity_score", 5)
+            if isinstance(score, (int, float)):
+                auth_scores.append(score)
+        
+        avg_authenticity = sum(auth_scores) / len(auth_scores) if auth_scores else 5
+        
+        # Products mentioned
+        products_total = 0
+        for analysis in structured_analyses:
+            products_count = analysis.get("commercial", {}).get("products_mentioned", 0)
+            if isinstance(products_count, int):
+                products_total += products_count
+        
+        # Production quality averages
+        quality_aspects = ["production", "information_density", "entertainment_value"]
+        avg_quality = {}
+        
+        for aspect in quality_aspects:
+            values = []
+            for analysis in structured_analyses:
+                quality_data = analysis.get("quality", {})
+                if aspect in quality_data:
+                    # Convert text ratings to numbers for averaging
+                    value = quality_data[aspect]
+                    if value == "high":
+                        values.append(3)
+                    elif value == "medium":
+                        values.append(2)
+                    elif value == "low":
+                        values.append(1)
+            
+            avg_quality[aspect] = sum(values) / len(values) if values else 2
+        
+        # Sentiment distribution
+        sentiments = []
+        for analysis in structured_analyses:
+            sentiment = analysis.get("sentiment", {}).get("overall", "neutral")
+            sentiments.append(sentiment)
+        
+        sentiment_dist = dict(Counter(sentiments))
+        
+        # Engagement techniques (flatten and count)
+        all_techniques = []
+        for analysis in structured_analyses:
+            recommendations = analysis.get("recommendations", [])
+            if isinstance(recommendations, list):
+                all_techniques.extend(recommendations)
+        
+        return ChannelMetrics(
+            total_videos=total_videos,
+            processed_videos=len(structured_analyses),
+            total_duration_minutes=total_duration,
+            avg_authenticity_score=avg_authenticity,
+            content_type_distribution=content_distribution,
+            products_mentioned_total=products_total,
+            avg_production_quality=avg_quality,
+            engagement_techniques_used=list(set(all_techniques))[:10],  # Top 10 unique
+            sentiment_distribution=sentiment_dist
+        )
+    
+    def _generate_llm_collective_analysis(self, channel_title: str, 
+                                        video_analyses: List[Dict], 
+                                        metrics: ChannelMetrics) -> str:
+        """Generate LLM-based collective analysis."""
+        
+        try:
+            if not (SETTINGS.openrouter_api_keys or SETTINGS.groq_api_keys or SETTINGS.gemini_api_keys):
+                return self._generate_basic_collective_analysis(channel_title, metrics)
+            
+            client = get_smart_client()
+            
+            # Prepare concise video summaries
+            video_summaries = []
+            for i, video in enumerate(video_analyses[:10], 1):  # Limit to 10 for token efficiency
+                analysis = video.get("analysis", {})
+                video_summaries.append(f"""
+**Video {i}: {video.get('title', 'Unknown')}**
+- Type: {analysis.get('content_type', {}).get('primary', 'Unknown')}
+- Duration: {video.get('duration_minutes', 0)} min
+- Authenticity: {analysis.get('communication', {}).get('authenticity_score', 5)}/10
+- Quality: {analysis.get('quality', {}).get('production', 'unknown')}
+- Sentiment: {analysis.get('sentiment', {}).get('overall', 'neutral')}""")
+            
+            prompt = f"""Analyze channel "{channel_title}" based on {metrics.processed_videos} videos:
+
+**CHANNEL METRICS:**
+- Videos: {metrics.total_videos} ({metrics.processed_videos} analyzed)
+- Duration: {metrics.total_duration_minutes} min total
+- Avg Authenticity: {metrics.avg_authenticity_score:.1f}/10
+- Content Types: {dict(list(metrics.content_type_distribution.items())[:3])}
+- Products Mentioned: {metrics.products_mentioned_total}
+
+**VIDEO SUMMARIES:**
+{chr(10).join(video_summaries)}
+
+Provide strategic analysis:
+
+## 📊 CHANNEL STRATEGY
+What's the core content strategy and positioning?
+
+## 🎯 CREATOR PROFILE  
+Communication style, authenticity, and audience connection approach.
+
+## 📈 CONTENT PERFORMANCE
+Quality trends, engagement patterns, and production standards.
+
+## 🛍️ MONETIZATION APPROACH
+Commercial content strategy and brand relationships.
+
+## 💡 GROWTH OPPORTUNITIES
+Top 3 specific, actionable improvements for channel growth.
+
+## ⚠️ POTENTIAL CHALLENGES
+Key areas that need attention or improvement.
+
+Keep analysis strategic and actionable. Focus on patterns across all videos."""
+
+            try:
+                response = client.chat(
+                    [
+                        {"role": "system", "content": "You are a YouTube strategy consultant. Provide actionable, data-driven insights."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.3,
+                    max_tokens=1200,
+                )
+                return response
+                
+            except Exception as e:
+                logger.error(f"LLM analysis failed: {e}")
+                return self._generate_basic_collective_analysis(channel_title, metrics)
+                
+        except Exception as e:
+            logger.error(f"Collective analysis generation failed: {e}")
+            return self._generate_basic_collective_analysis(channel_title, metrics)
+    
+    def _generate_basic_collective_analysis(self, channel_title: str, metrics: ChannelMetrics) -> str:
+        """Generate basic collective analysis without LLM."""
+        
+        primary_content = max(metrics.content_type_distribution.items(), key=lambda x: x[1])[0] if metrics.content_type_distribution else "Unknown"
+        primary_sentiment = max(metrics.sentiment_distribution.items(), key=lambda x: x[1])[0] if metrics.sentiment_distribution else "Unknown"
+        
+        return f"""## 📊 CHANNEL ANALYSIS: {channel_title}
+
+### 📈 OVERVIEW
+- **Primary Content Type:** {primary_content}
+- **Total Videos Analyzed:** {metrics.processed_videos}
+- **Average Authenticity Score:** {metrics.avg_authenticity_score:.1f}/10
+- **Total Duration:** {metrics.total_duration_minutes} minutes
+
+### 🎯 CONTENT FOCUS
+The channel primarily creates {primary_content.lower()} content with an average authenticity score of {metrics.avg_authenticity_score:.1f}/10, suggesting {"high authenticity" if metrics.avg_authenticity_score >= 7 else "moderate authenticity" if metrics.avg_authenticity_score >= 5 else "room for authenticity improvement"}.
+
+### 💭 AUDIENCE SENTIMENT
+Overall sentiment is {primary_sentiment.lower()}, indicating {"positive audience reception" if primary_sentiment == "positive" else "neutral to mixed reception" if primary_sentiment == "neutral" else "potential engagement challenges"}.
+
+### 🛍️ COMMERCIAL ACTIVITY
+{metrics.products_mentioned_total} products/brands mentioned across all videos, suggesting {"active monetization" if metrics.products_mentioned_total > 5 else "moderate commercial activity" if metrics.products_mentioned_total > 0 else "minimal commercial content"}.
+
+### 💡 RECOMMENDATIONS
+- Focus on maintaining content consistency in {primary_content.lower()} category
+- {"Continue authentic approach" if metrics.avg_authenticity_score >= 7 else "Work on increasing authenticity and genuine connection"}
+- {"Optimize positive sentiment" if primary_sentiment == "positive" else "Improve content engagement and audience satisfaction"}
+
+*Note: Enhanced analysis requires LLM configuration. Current analysis based on quantitative metrics only.*"""
+    
+    def _save_collective_report(self, channel_id: str, channel_title: str, 
+                              analysis_text: str, metrics: ChannelMetrics,
+                              video_analyses: List[Dict], output_dir: Path) -> Path:
+        """Save comprehensive collective analysis report."""
+        
+        file_path = output_dir / f"COLLECTIVE_ANALYSIS_{channel_id}.md"
+        
+        content = f"""# 📺 COMPREHENSIVE CHANNEL ANALYSIS
+## {channel_title}
+
+**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+**Channel ID:** `{channel_id}`
+
+---
+
+{analysis_text}
+
+---
+
+# 📈 DETAILED METRICS
+
+## Content Distribution
+{chr(10).join([f"- **{content_type}:** {count} videos ({count/metrics.total_videos*100:.1f}%)" for content_type, count in metrics.content_type_distribution.items()])}
+
+## Video Portfolio
+{chr(10).join([f"**{i}.** {v.get('title', 'Unknown Title')} ({v.get('duration_minutes', 0)} min)" for i, v in enumerate(video_analyses, 1)])}
+
+## Performance Metrics
+- **📊 Videos Analyzed:** {metrics.processed_videos} / {metrics.total_videos}
+- **⏱️ Total Duration:** {metrics.total_duration_minutes} minutes ({metrics.total_duration_minutes/60:.1f} hours)
+- **📈 Average Duration:** {metrics.total_duration_minutes/metrics.total_videos:.1f} minutes per video
+- **🏆 Authenticity Score:** {metrics.avg_authenticity_score:.1f}/10
+- **🛍️ Commercial Content:** {metrics.products_mentioned_total} products/brands mentioned
+
+## Production Quality Averages
+{chr(10).join([f"- **{aspect.title()}:** {score:.1f}/3.0" for aspect, score in metrics.avg_production_quality.items()])}
+
+## Sentiment Breakdown
+{chr(10).join([f"- **{sentiment.title()}:** {count} videos ({count/metrics.processed_videos*100:.1f}%)" for sentiment, count in metrics.sentiment_distribution.items()])}
+
+---
+
+**Analysis Method:** Multi-modal AI analysis combining audio transcription, visual frame analysis, and structured data extraction.
+**Generated by:** Enhanced NC_IM Channel Analysis System v2.0
+"""
+        
+        file_path.write_text(content, encoding='utf-8')
+        return file_path
+    
+    def process_channel_videos(self, channel_id: str, channel_title: str, 
+                             max_videos: int, use_enhanced_analysis: bool = True) -> Dict:
+        """Process multiple videos from a channel with enhanced progress tracking."""
+        
+        # Create output directory
+        output_dir = REPORTS_DIR / "channel_analysis" / channel_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            # Get service and videos
+            service, access_type = self.get_service_for_channel(channel_id)
+            videos = self.get_channel_videos(service, channel_id, max_videos)
+            
+            if not videos:
+                return {"success": False, "error": "No videos found or failed to fetch videos"}
+            
+            # Process videos with progress tracking
+            results = []
+            self._processing_stats = defaultdict(int)
+            
+            for i, video_info in enumerate(videos):
+                video_id = video_info["video_id"]
+                video_title = video_info["title"]
+                
+                # Process video
+                result = self.process_single_video(
+                    video_id, video_title, output_dir, use_enhanced_analysis
+                )
+                results.append(result)
+                
+                # Update stats
+                if result.success:
+                    if result.skipped:
+                        self._processing_stats["skipped"] += 1
+                    else:
+                        self._processing_stats["successful"] += 1
+                else:
+                    self._processing_stats["failed"] += 1
+            
+            return {
+                "success": True,
+                "videos_processed": len(videos),
+                "successful_analyses": self._processing_stats["successful"],
+                "failed_analyses": self._processing_stats["failed"],
+                "skipped_analyses": self._processing_stats["skipped"],
+                "results": results,
+                "output_dir": output_dir,
+                "access_type": access_type,
+                "processing_stats": dict(self._processing_stats)
+            }
+            
+        except Exception as e:
+            logger.error(f"Channel video processing failed: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def get_processing_stats(self) -> Dict[str, int]:
+        """Get current processing statistics."""
+        return dict(self._processing_stats)
+    
+    def clear_cache(self) -> None:
+        """Clear internal cache."""
+        self._cache.clear()
+        logger.info("Analysis cache cleared")
