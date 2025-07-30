@@ -162,8 +162,42 @@ def download_video(url: str, output_dir: Path | str = "downloads", quality: str 
     cmd.extend(["-o", str(out_path), url])
     
     logger.info("Downloading video %s -> %s (quality: %s)", url, out_path, quality)
-    subprocess.run(cmd, check=True)
-    return out_path
+    
+    # Check if file already exists and is valid
+    if out_path.exists() and out_path.stat().st_size > 0:
+        logger.info(f"Video file already exists: {out_path}")
+        return out_path
+    
+    try:
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        if out_path.exists() and out_path.stat().st_size > 0:
+            logger.info(f"Successfully downloaded video: {out_path} ({out_path.stat().st_size / (1024*1024):.1f} MB)")
+            return out_path
+        else:
+            raise RuntimeError(f"Download completed but file not found or empty: {out_path}")
+            
+    except subprocess.CalledProcessError as e:
+        logger.error(f"yt-dlp failed with command: {' '.join(cmd)}")
+        logger.error(f"Exit code: {e.returncode}")
+        if e.stderr:
+            logger.error(f"stderr: {e.stderr}")
+        
+        # Try with a more compatible format as fallback
+        if quality != "best":
+            logger.info("Retrying with 'best' quality as fallback...")
+            fallback_cmd = ["yt-dlp", "-f", "mp4", "-o", str(out_path), url]
+            try:
+                subprocess.run(fallback_cmd, check=True, capture_output=True, text=True)
+                if out_path.exists() and out_path.stat().st_size > 0:
+                    logger.info(f"Fallback download successful: {out_path}")
+                    return out_path
+                else:
+                    raise RuntimeError(f"Fallback download completed but file not found: {out_path}")
+            except subprocess.CalledProcessError as fallback_error:
+                logger.error(f"Fallback download also failed: {fallback_error}")
+        
+        # Re-raise the original exception with more context
+        raise RuntimeError(f"Video download failed for {url}. Original error: {e}") from e
 
 
 # ---------------------------------------------------------------------------
