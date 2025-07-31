@@ -26,8 +26,7 @@ wheels/
 !.env.example
 client_secret.json
 oauth_token.json
-tokens/
-reports/
+data/
 
 # LLM Key Management (IMPORTANT: Contains API keys!)
 .llm_key_state.json
