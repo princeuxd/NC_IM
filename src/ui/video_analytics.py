@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from src.helpers import video_analytics as va
-from src.analysis.video_frames import parse_iso_duration_to_minutes
+from src.analysis.video_frames import parse_iso_duration_to_minutes, extract_video_id
 
 
 def _safe_read_file(file_path: Path, encoding: str = "utf-8") -> str:
@@ -43,24 +43,97 @@ def render_video_analytics():
         "Comprehensive analysis of individual videos – audio, visual frames, comments & statistics (same as channel analytics)."
     )
 
-    channel_id = st.text_input("Channel ID", placeholder="UC...", key="va_channel")
+    # Add toggle for input method
+    input_method = st.radio(
+        "Choose input method:",
+        ["Channel ID", "YouTube Video URL"],
+        key="va_input_method"
+    )
+    
+    # Clear session state when switching input methods
+    if "va_input_method_prev" not in st.session_state:
+        st.session_state["va_input_method_prev"] = input_method
+    elif st.session_state["va_input_method_prev"] != input_method:
+        # Clear relevant session state when switching methods
+        if "va_videos" in st.session_state:
+            del st.session_state["va_videos"]
+        if "va_result" in st.session_state:
+            del st.session_state["va_result"]
+        st.session_state["va_input_method_prev"] = input_method
+    
+    # Show helpful information based on selection
+    if input_method == "Channel ID":
+        st.info("📺 **Channel ID Mode**: Enter a YouTube channel ID to browse and select from recent videos.")
+    else:
+        st.info("🔗 **Direct URL Mode**: Enter any YouTube video URL to analyze it directly.")
 
-    if not channel_id:
-        st.info("Enter a channel ID to list recent videos.")
-        return
+    if input_method == "Channel ID":
+        # Original channel ID input
+        channel_id = st.text_input("Channel ID", placeholder="UC...", key="va_channel")
 
-    if st.button("📥 Fetch Videos", key="va_fetch") or "va_videos" not in st.session_state:
-        with st.spinner("Fetching videos..."):
-            st.session_state["va_videos"] = _get_videos(channel_id)
+        if not channel_id:
+            st.info("Enter a channel ID to list recent videos.")
+            return
 
-    videos = st.session_state.get("va_videos", [])
-    if not videos:
-        st.warning("No videos found or failed to fetch.")
-        return
+        if st.button("📥 Fetch Videos", key="va_fetch") or "va_videos" not in st.session_state:
+            with st.spinner("Fetching videos..."):
+                st.session_state["va_videos"] = _get_videos(channel_id)
 
-    video_titles = {f"{v['title']} ({v['video_id']})": v["video_id"] for v in videos}
-    selected_label = st.selectbox("Select Video", list(video_titles.keys()), key="va_select")
-    video_id = video_titles[selected_label]
+        videos = st.session_state.get("va_videos", [])
+        if not videos:
+            st.warning("No videos found or failed to fetch.")
+            return
+
+        video_titles = {f"{v['title']} ({v['video_id']})": v["video_id"] for v in videos}
+        selected_label = st.selectbox("Select Video", list(video_titles.keys()), key="va_select")
+        video_id = video_titles[selected_label]
+
+    else:
+        # YouTube URL input
+        video_url = st.text_input(
+            "YouTube Video URL", 
+            placeholder="https://www.youtube.com/watch?v=... or https://youtu.be/... or https://youtube.com/shorts/...",
+            key="va_video_url"
+        )
+
+        if not video_url:
+            st.info("Enter a YouTube video URL to analyze.")
+            with st.expander("💡 Supported URL formats"):
+                st.markdown("""
+                **Supported YouTube URL formats:**
+                - `https://www.youtube.com/watch?v=VIDEO_ID`
+                - `https://youtu.be/VIDEO_ID`
+                - `https://youtube.com/shorts/VIDEO_ID` (YouTube Shorts)
+                - `https://www.youtube.com/watch?v=VIDEO_ID&t=30s` (with timestamp)
+                - `https://www.youtube.com/watch?v=VIDEO_ID&list=PLAYLIST_ID` (from playlist)
+                """)
+            return
+
+        # Extract video ID from URL
+        try:
+            video_id = extract_video_id(video_url)
+            st.success(f"✅ Extracted video ID: {video_id}")
+            
+            # Try to get video title for immediate feedback
+            try:
+                import os
+                from src.config.settings import SETTINGS
+                from src.youtube import public as yt_public
+                
+                api_key = os.getenv("YT_API_KEY") or SETTINGS.youtube_api_key
+                if api_key:
+                    yt_service = yt_public.get_service(api_key)
+                    video_resp = yt_service.videos().list(part="snippet", id=video_id).execute()
+                    if video_resp.get("items"):
+                        video_title = video_resp["items"][0]["snippet"]["title"]
+                        st.info(f"📹 **Video Title**: {video_title}")
+            except Exception:
+                # If we can't get the title, that's okay - the analysis will still work
+                pass
+                
+        except ValueError as e:
+            st.error(f"❌ Invalid YouTube URL: {e}")
+            return
 
     if st.button("🚀 Run Complete Analysis", key="va_run"):
         with st.spinner("Running comprehensive video analysis – this may take several minutes..."):

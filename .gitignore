@@ -74,6 +74,7 @@ tmp/
 temp/
 *.tmp
 *.bak
+src/reports/
 
 # Jupyter Notebook
 .ipynb_checkpoints

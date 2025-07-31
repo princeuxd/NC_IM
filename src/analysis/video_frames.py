@@ -93,7 +93,7 @@ def extract_frames(
 
 
 # --- ID helper & download -------------------------------------------------
-_YT_REGEX = re.compile(r"(?:v=|youtu\.be/)([A-Za-z0-9_-]{11})")
+_YT_REGEX = re.compile(r"(?:v=|youtu\.be/|/shorts/)([A-Za-z0-9_-]{11})")
 
 def extract_video_id(url: str) -> str:
     m = _YT_REGEX.search(url)

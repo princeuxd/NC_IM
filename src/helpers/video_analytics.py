@@ -53,7 +53,7 @@ def _get_oauth_service_for_video(video_id: str):
         # Check if client_secret.json exists or environment variables are set
         if not DEFAULT_CLIENT_SECRET.exists():
             # Try to create from environment variables
-            from auth.manager import create_temp_client_secret_file
+            from src.auth.manager import create_temp_client_secret_file
             temp_client_secret = create_temp_client_secret_file()
             if not temp_client_secret:
                 logger.info("No OAuth client configuration available (missing client_secret.json and environment variables)")

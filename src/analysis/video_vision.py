@@ -63,7 +63,7 @@ def summarise_frames(
         content.append({"type": "text", "text": f"Timestamp: {ts:.1f}s"})
 
     # Use smart client for automatic key rotation and provider fallback
-    from llms import get_smart_client
+    from src.llms import get_smart_client
     
     try:
         client = get_smart_client()
