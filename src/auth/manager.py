@@ -78,24 +78,36 @@ def get_oauth_config_from_env() -> Dict[str, Any]:
 
 
 def create_temp_client_secret_file() -> Optional[Path]:
-    """Create a temporary client secret file from environment variables.
-    
-    Returns the path to the temporary file if successful, None otherwise.
+    """Create a temporary client-secret JSON built from env-vars.
+
+    • Tries to write into ``TOKENS_DIR`` first (so the user can inspect it).
+    • If that directory is not writable (common on read-only deployments),
+      falls back to the system temp directory.
     """
-    env_config = get_oauth_config_from_env()
-    
-    if not env_config["valid"]:
+    import tempfile, uuid  # local import to avoid slowing cold-starts
+
+    env_cfg = get_oauth_config_from_env()
+    if not env_cfg["valid"]:
         return None
-    
-    # Create temporary client secret file
-    temp_file = TOKENS_DIR / "_temp_client_secret.json"
-    
+
+    # Decide where to put the file
+    target_dir: Path
     try:
-        with open(temp_file, 'w') as f:
-            json.dump(env_config["config"], f, indent=2)
-        return temp_file
-    except Exception as e:
-        logger.error(f"Failed to create temporary client secret file: {e}")
+        TOKENS_DIR.mkdir(parents=True, exist_ok=True)
+        target_dir = TOKENS_DIR
+    except Exception:
+        # Fallback to OS temp directory
+        target_dir = Path(tempfile.gettempdir())
+
+    tmp_name = f"_tmp_client_secret_{uuid.uuid4().hex}.json"
+    tmp_path = target_dir / tmp_name
+
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as fp:
+            json.dump(env_cfg["config"], fp, indent=2)
+        return tmp_path
+    except Exception as exc:
+        logger.error("Failed to create temporary client-secret JSON: %s", exc)
         return None
 
 
