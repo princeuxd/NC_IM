@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 from src.config.settings import SETTINGS, PipelineSettings
+import os
 import re, subprocess, shutil, urllib.parse
 from typing import Optional
 
@@ -153,7 +154,14 @@ def download_video(url: str, output_dir: Path | str = "downloads", quality: str 
     out_path = output_dir / f"{vid}.{ext}"
     
     # Build command - only use merge-output-format for video+audio combinations
-    cmd = ["yt-dlp", "-f", format_selector]
+    # Supply a realistic User-Agent and referer to reduce the chance of HTTP 403 errors
+    user_agent = os.getenv("YT_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:118.0) Gecko/20100101 Firefox/118.0")
+    cmd = [
+        "yt-dlp",
+        "--user-agent", user_agent,
+        "--referer", url,
+        "-f", format_selector,
+    ]
     
     if quality != "audio":
         # Only add merge format for video downloads that combine video+audio
@@ -185,7 +193,14 @@ def download_video(url: str, output_dir: Path | str = "downloads", quality: str 
         # Try with a more compatible format as fallback
         if quality != "best":
             logger.info("Retrying with 'best' quality as fallback...")
-            fallback_cmd = ["yt-dlp", "-f", "mp4", "-o", str(out_path), url]
+            fallback_cmd = [
+                "yt-dlp",
+                "--user-agent", user_agent,
+                "--referer", url,
+                "-f", "mp4",
+                "-o", str(out_path),
+                url,
+            ]
             try:
                 subprocess.run(fallback_cmd, check=True, capture_output=True, text=True)
                 if out_path.exists() and out_path.stat().st_size > 0:
