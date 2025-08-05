@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 from src.config.settings import SETTINGS, PipelineSettings
-import re, subprocess, shutil, urllib.parse
+import re, subprocess, shutil, urllib.parse, time, random
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -107,7 +107,7 @@ def extract_video_id(url: str) -> str:
 
 
 def download_video(url: str, output_dir: Path | str = "downloads", quality: str = "best") -> Path:
-    """Download video with configurable quality settings to manage file size.
+    """Download video with configurable quality settings and robust retry strategies.
     
     Args:
         url: YouTube video URL
@@ -128,38 +128,24 @@ def download_video(url: str, output_dir: Path | str = "downloads", quality: str 
     
     # Configure format selection based on quality preference
     if quality == "best":
-        # Current behavior - best quality available
         format_selector = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4"
         ext = "mp4"
     elif quality == "medium":
-        # Max 720p, prefer smaller sizes
         format_selector = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/mp4"
         ext = "mp4"
     elif quality == "small":
-        # Max 480p for smaller files
         format_selector = "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/mp4"
         ext = "mp4"
     elif quality == "tiny":
-        # Max 360p, very small files
         format_selector = "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360][ext=mp4]/worst[ext=mp4]/mp4"
         ext = "mp4"
     elif quality == "audio":
-        # Audio only - smallest possible size for transcription workflows
         format_selector = "bestaudio[ext=m4a]/bestaudio"
         ext = "m4a"
     else:
         raise ValueError(f"Invalid quality setting: {quality}. Use: best, medium, small, tiny, or audio")
     
     out_path = output_dir / f"{vid}.{ext}"
-    
-    # Build command - only use merge-output-format for video+audio combinations
-    cmd = ["yt-dlp", "-f", format_selector]
-    
-    if quality != "audio":
-        # Only add merge format for video downloads that combine video+audio
-        cmd.extend(["--merge-output-format", ext])
-    
-    cmd.extend(["-o", str(out_path), url])
     
     logger.info("Downloading video %s -> %s (quality: %s)", url, out_path, quality)
     
@@ -168,36 +154,122 @@ def download_video(url: str, output_dir: Path | str = "downloads", quality: str 
         logger.info(f"Video file already exists: {out_path}")
         return out_path
     
-    try:
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        if out_path.exists() and out_path.stat().st_size > 0:
-            logger.info(f"Successfully downloaded video: {out_path} ({out_path.stat().st_size / (1024*1024):.1f} MB)")
-            return out_path
-        else:
-            raise RuntimeError(f"Download completed but file not found or empty: {out_path}")
+    # Define multiple retry strategies to handle YouTube's anti-bot measures
+    strategies = [
+        {
+            "name": "Standard",
+            "extra_args": [],
+            "format": format_selector
+        },
+        {
+            "name": "Browser Headers",
+            "extra_args": [
+                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "--add-header", "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "--add-header", "Accept-Language:en-us,en;q=0.5",
+                "--add-header", "Sec-Fetch-Mode:navigate"
+            ],
+            "format": format_selector
+        },
+        {
+            "name": "Extractor Args",
+            "extra_args": [
+                "--extractor-args", "youtube:player_client=web,mweb",
+                "--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15"
+            ],
+            "format": format_selector
+        },
+        {
+            "name": "Simple Format",
+            "extra_args": [
+                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            ],
+            "format": "mp4/best"
+        },
+        {
+            "name": "Worst Quality",
+            "extra_args": [],
+            "format": "worst[ext=mp4]/worst"
+        }
+    ]
+    
+    last_error = None
+    
+    for attempt, strategy in enumerate(strategies, 1):
+        try:
+            logger.info(f"Attempt {attempt}/5: Trying {strategy['name']} strategy")
             
-    except subprocess.CalledProcessError as e:
-        logger.error(f"yt-dlp failed with command: {' '.join(cmd)}")
-        logger.error(f"Exit code: {e.returncode}")
-        if e.stderr:
-            logger.error(f"stderr: {e.stderr}")
-        
-        # Try with a more compatible format as fallback
-        if quality != "best":
-            logger.info("Retrying with 'best' quality as fallback...")
-            fallback_cmd = ["yt-dlp", "-f", "mp4", "-o", str(out_path), url]
-            try:
-                subprocess.run(fallback_cmd, check=True, capture_output=True, text=True)
-                if out_path.exists() and out_path.stat().st_size > 0:
-                    logger.info(f"Fallback download successful: {out_path}")
-                    return out_path
-                else:
-                    raise RuntimeError(f"Fallback download completed but file not found: {out_path}")
-            except subprocess.CalledProcessError as fallback_error:
-                logger.error(f"Fallback download also failed: {fallback_error}")
-        
-        # Re-raise the original exception with more context
-        raise RuntimeError(f"Video download failed for {url}. Original error: {e}") from e
+            # Build command with strategy-specific arguments
+            cmd = ["yt-dlp", "-f", strategy["format"]]
+            
+            # Add extra arguments for this strategy
+            cmd.extend(strategy["extra_args"])
+            
+            # Add merge format for video downloads (not for audio-only)
+            if quality != "audio" and "+" in strategy["format"]:
+                cmd.extend(["--merge-output-format", ext])
+            
+            # Add retry options
+            cmd.extend([
+                "--retries", "3",
+                "--fragment-retries", "3",
+                "--retry-sleep", "linear:1:5:2"
+            ])
+            
+            cmd.extend(["-o", str(out_path), url])
+            
+            # Add exponential backoff delay between attempts
+            if attempt > 1:
+                delay = min(2 ** (attempt - 2) + random.uniform(0, 1), 30)
+                logger.info(f"Waiting {delay:.1f}s before retry...")
+                time.sleep(delay)
+            
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=300)
+            
+            if out_path.exists() and out_path.stat().st_size > 0:
+                logger.info(f"Successfully downloaded video: {out_path} ({out_path.stat().st_size / (1024*1024):.1f} MB)")
+                return out_path
+            else:
+                raise RuntimeError(f"Download completed but file not found or empty: {out_path}")
+                
+        except subprocess.CalledProcessError as e:
+            last_error = e
+            logger.warning(f"Strategy '{strategy['name']}' failed: {e}")
+            if e.stderr:
+                logger.warning(f"stderr: {e.stderr}")
+            
+            # Check for specific error types
+            error_output = (e.stderr or "") + (e.stdout or "")
+            if "403" in error_output or "Forbidden" in error_output:
+                logger.warning("HTTP 403 Forbidden - YouTube blocking request")
+            elif "Sign in to confirm" in error_output:
+                logger.warning("YouTube requesting sign-in verification")
+            elif "Private video" in error_output:
+                raise RuntimeError(f"Video {vid} is private or unavailable")
+            
+            continue
+            
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Strategy '{strategy['name']}' timed out after 5 minutes")
+            continue
+            
+        except Exception as e:
+            last_error = e
+            logger.warning(f"Strategy '{strategy['name']}' failed with unexpected error: {e}")
+            continue
+    
+    # All strategies failed
+    error_msg = f"All download strategies failed for {url}"
+    if last_error:
+        if isinstance(last_error, subprocess.CalledProcessError):
+            error_output = (last_error.stderr or "") + (last_error.stdout or "")
+            if "403" in error_output or "Forbidden" in error_output:
+                error_msg += ". This is likely due to YouTube's anti-bot measures. Try again later or check if the video is publicly accessible."
+            elif "Sign in to confirm" in error_output:
+                error_msg += ". YouTube is requesting sign-in verification. This usually resolves itself after some time."
+        error_msg += f" Last error: {last_error}"
+    
+    raise RuntimeError(error_msg)
 
 
 # ---------------------------------------------------------------------------
