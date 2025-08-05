@@ -320,9 +320,10 @@ def onboard_creator(
         logger.info("Onboarded channel '%s' (%s)", channel_title, channel_id)
         return final_token_path, channel_id, channel_title
     except Exception as exc:  # pylint: disable=broad-except
-        logger.error("OAuth onboarding failed: %s", exc)
+        # Surface the original error message so the caller/UI can debug easily
+        logger.exception("OAuth onboarding failed")
         temp_token.unlink(missing_ok=True)
-        raise RuntimeError("OAuth onboarding failed") from exc
+        raise RuntimeError(f"OAuth onboarding failed: {exc}") from exc
 
 
 def remove_creator(channel_id: str, *, tokens_dir: Optional[Path] = None) -> bool:
