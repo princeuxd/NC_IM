@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import streamlit as st
 import json
+import pandas as pd
 from pathlib import Path
 
 from src.helpers import video_analytics as va
@@ -537,7 +538,6 @@ def _display_audience_retention(analytics_data):
         st.markdown("### 📊 Audience Retention Curve")
         
         # Convert retention data to chart format
-        import pandas as pd
         
         if retention_data:
             time_points = []
@@ -618,8 +618,6 @@ def _display_demographics_analytics(analytics_data):
     if demographics_data and not isinstance(demographics_data, dict):
         st.markdown("### 👥 Audience Demographics")
         
-        import pandas as pd
-        
         # Process demographics data
         age_gender_data = []
         
@@ -679,8 +677,6 @@ def _display_geography_analytics(analytics_data):
     
     if geography_data and not isinstance(geography_data, dict):
         st.markdown("### 🗺️ Geographic Distribution")
-        
-        import pandas as pd
         
         # Process geography data
         country_data = []
@@ -794,7 +790,6 @@ def _display_monetization_analytics(analytics_data):
                 'Other Revenue': max(0, gross_revenue - ad_revenue - red_revenue)
             }
             
-            import pandas as pd
             df = pd.DataFrame(list(revenue_data.items()), columns=['Revenue Type', 'Amount'])
             df = df[df['Amount'] > 0]  # Only show non-zero revenues
             
@@ -835,8 +830,6 @@ def _display_time_series_analytics(analytics_data):
     
     if time_series_data.get("rows"):
         st.markdown("### 📅 Performance Over Time")
-        
-        import pandas as pd
         
         # Process time series data
         dates = []
@@ -940,8 +933,6 @@ def _display_engagement_analytics(analytics_data):
     
     if traffic_data and not isinstance(traffic_data, dict):
         st.markdown("### 🚦 Traffic Sources")
-        
-        import pandas as pd
         
         traffic_list = []
         for row in traffic_data:

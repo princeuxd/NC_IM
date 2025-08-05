@@ -35,8 +35,8 @@ from src.auth.manager import list_token_files as _list_token_files
 logger = logging.getLogger(__name__)
 
 # Constants
-ROOT = Path(__file__).resolve().parent.parent
-REPORTS_DIR = ROOT / "reports"
+ROOT = Path(__file__).resolve().parent.parent.parent 
+REPORTS_DIR = ROOT / "data" / "reports"
 REPORTS_DIR.mkdir(exist_ok=True, parents=True)
 
 TOKENS_DIR = ROOT / "data" / "tokens"
@@ -57,7 +57,7 @@ class ChannelAnalysisService:
         self.brand_service = None
         if enable_brand_analysis:
             try:
-                from analysis.brand_focused_channel_analysis import BrandFocusedChannelAnalysisService
+                from src.analysis.brand_focused_channel_analysis import BrandFocusedChannelAnalysisService
                 self.brand_service = BrandFocusedChannelAnalysisService(yt_api_key)
                 logger.info("Brand-focused analysis enabled")
             except Exception as e:
