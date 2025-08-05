@@ -189,26 +189,9 @@ def analyze_video(
         # 1. Download video (respect auto quality based on duration)
         # ------------------------------------------------------------------
         url = f"https://www.youtube.com/watch?v={video_id}"
-        try:
-            duration_minutes = get_video_duration_from_url(url)
-            quality = auto_select_video_quality(duration_minutes)
-            video_path = download_video(url, output_dir=output_base, quality=quality)
-        except Exception as download_error:
-            # Provide specific feedback for download failures
-            error_msg = str(download_error)
-            if "403" in error_msg or "Forbidden" in error_msg:
-                logger.error(f"Video download blocked by YouTube (HTTP 403) for {video_id}. This is likely due to anti-bot measures.")
-                raise RuntimeError(f"Video download failed due to YouTube blocking (HTTP 403). This usually happens due to anti-bot protection. Try again later or check if the video is publicly accessible. Video: {url}")
-            elif "Sign in to confirm" in error_msg:
-                logger.error(f"YouTube requesting sign-in verification for {video_id}")
-                raise RuntimeError(f"YouTube is requesting sign-in verification. This usually resolves itself after some time. Video: {url}")
-            elif "Private video" in error_msg or "unavailable" in error_msg.lower():
-                logger.error(f"Video {video_id} is private or unavailable")
-                raise RuntimeError(f"Video is private, deleted, or unavailable. Video: {url}")
-            else:
-                # Re-raise the original error with more context
-                logger.error(f"Video download failed for {video_id}: {download_error}")
-                raise RuntimeError(f"Video download failed for {url}. Original error: {download_error}") from download_error
+        duration_minutes = get_video_duration_from_url(url)
+        quality = auto_select_video_quality(duration_minutes)
+        video_path = download_video(url, output_dir=output_base, quality=quality)
 
         # ------------------------------------------------------------------
         # 2. Enhanced Audio Analysis (same as channel analytics)
