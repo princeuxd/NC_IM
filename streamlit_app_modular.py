@@ -4,6 +4,7 @@ import streamlit as st
 from src.ui.onboarding import render_onboarding
 from src.ui.video_analytics import render_video_analytics
 from src.ui.channel_analytics import render_channel_analytics
+from src.ui.talk_with_ai import render_talk_with_ai
 
 
 def main():
@@ -68,6 +69,7 @@ def main():
                 "Creator Onboarding",
                 "Video Analytics", 
                 "Channel Analytics",
+                "Talk with AI",
             ),
             help="Choose analysis type"
         )
@@ -79,6 +81,8 @@ def main():
         render_video_analytics()
     elif section == "Channel Analytics":
         render_channel_analytics()
+    elif section == "Talk with AI":
+        render_talk_with_ai()
 
 
 if __name__ == "__main__":
