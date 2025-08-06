@@ -190,26 +190,26 @@ def download_video(url: str, output_dir: Path | str = "downloads", quality: str 
         if e.stderr:
             logger.error(f"stderr: {e.stderr}")
         
-        # Try with a more compatible format as fallback
-        if quality != "best":
-            logger.info("Retrying with 'best' quality as fallback...")
-            fallback_cmd = [
-                "yt-dlp",
-                "--user-agent", user_agent,
-                "--referer", url,
-                "-f", "mp4",
-                "-o", str(out_path),
-                url,
-            ]
-            try:
-                subprocess.run(fallback_cmd, check=True, capture_output=True, text=True)
-                if out_path.exists() and out_path.stat().st_size > 0:
-                    logger.info(f"Fallback download successful: {out_path}")
-                    return out_path
-                else:
-                    raise RuntimeError(f"Fallback download completed but file not found: {out_path}")
-            except subprocess.CalledProcessError as fallback_error:
-                logger.error(f"Fallback download also failed: {fallback_error}")
+        # Try again with a simpler progressive MP4 if DASH split formats
+        # are blocked (common cause of 403). This is attempted exactly once.
+        logger.info("Retrying with single-stream MP4 fallback …")
+        fallback_cmd = [
+            "yt-dlp",
+            "--user-agent", user_agent,
+            "--referer", url,
+            "-f", "best[ext=mp4]/mp4",
+            "-o", str(out_path),
+            url,
+        ]
+        try:
+            subprocess.run(fallback_cmd, check=True, capture_output=True, text=True)
+            if out_path.exists() and out_path.stat().st_size > 0:
+                logger.info(f"Fallback download successful: {out_path}")
+                return out_path
+            else:
+                raise RuntimeError(f"Fallback download completed but file not found: {out_path}")
+        except subprocess.CalledProcessError as fallback_error:
+            logger.error(f"Fallback download also failed: {fallback_error}")
         
         # Re-raise the original exception with more context
         raise RuntimeError(f"Video download failed for {url}. Original error: {e}") from e

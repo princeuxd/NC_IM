@@ -57,9 +57,14 @@ def fetch_comments(
         try:
             resp = req.execute()
         except Exception as exc:  # pragma: no cover
+            # Handle common 403 error patterns gracefully without spamming the logs
             if order == "relevance" and "insufficientPermissions" in str(exc):
                 logger.info("order='relevance' not allowed without OAuth – retrying with 'time'")
                 return fetch_comments(service, video_id, max_pages=max_pages, order="time")
+            if "commentsDisabled" in str(exc):
+                # The uploader has disabled comments for this video – nothing we can fetch.
+                logger.info("Comments are disabled for video %s – returning empty list.", video_id)
+                break
             logger.warning("Comment fetch failed (%s). Returning what we have.", exc)
             break
 

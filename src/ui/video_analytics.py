@@ -181,125 +181,107 @@ def render_video_analytics():
     summary_content = _safe_read_file(summary_file)
     if summary_content:
         st.markdown("---")
-        st.markdown("## 📄 Complete Video Analysis Summary")
-        st.markdown(summary_content)
-        st.download_button(
-            "⬇️ Download Complete Summary", 
-            summary_content.encode('utf-8'), 
-            file_name=f"{video_id}_summary.md",
-            mime="text/markdown",
-            key="summary_download"
-        )
+        with st.expander("📄 Complete Video Analysis Summary", expanded=True):
+            st.markdown(summary_content)
+            st.download_button(
+                "⬇️ Download Complete Summary", 
+                summary_content.encode('utf-8'), 
+                file_name=f"{video_id}_summary.md",
+                mime="text/markdown",
+                key="summary_download"
+            )
 
     st.markdown("---")
 
     # a. Audio Analysis (same as channel analytics)
-    st.markdown("## 🎤 Audio Analysis")
-    
-    audio_analysis = result.get("audio_analysis")
-    if audio_analysis and audio_analysis != "Enhanced audio analysis failed":
-        st.markdown("### Enhanced Audio Analysis (LLM)")
-        st.markdown(audio_analysis)
-    
-    # Audio transcript data
-    audio_file = output_dir / f"{video_id}_audio.json"
-    audio_data = _safe_read_json(audio_file)
-    if audio_data:
-        st.markdown("### Transcript Segments with Sentiment")
-        
-        segments = audio_data if isinstance(audio_data, list) else []
-        if segments:
-            # Show sample segments
-            sample_segments = segments[:5]  # Show first 5 segments
-            for i, seg in enumerate(sample_segments):
-                sentiment = seg.get('sentiment', 'N/A')
-                text = seg.get('text', '').strip()
-                start_time = seg.get('start', 0)
-                
-                if text:
-                    st.markdown(f"**[{start_time:.1f}s]** (Sentiment: {sentiment}): {text}")
-            
-            if len(segments) > 5:
-                st.markdown(f"... and {len(segments) - 5} more segments")
-        
-        st.download_button(
-            "⬇️ Download Audio Analysis JSON", 
-            json.dumps(audio_data, indent=2).encode('utf-8'), 
-            file_name=f"{video_id}_audio.json",
-            mime="application/json",
-            key="audio_download"
-        )
+    with st.expander("🎤 Audio Analysis", expanded=False):
+        audio_analysis = result.get("audio_analysis")
+        if audio_analysis and audio_analysis != "Enhanced audio analysis failed":
+            st.markdown("### Enhanced Audio Analysis (LLM)")
+            st.markdown(audio_analysis)
+        # Audio transcript data
+        audio_file = output_dir / f"{video_id}_audio.json"
+        audio_data = _safe_read_json(audio_file)
+        if audio_data:
+            st.markdown("### Transcript Segments with Sentiment")
+            segments = audio_data if isinstance(audio_data, list) else []
+            if segments:
+                sample_segments = segments[:5]  # Show first 5 segments
+                for i, seg in enumerate(sample_segments):
+                    sentiment = seg.get('sentiment', 'N/A')
+                    text = seg.get('text', '').strip()
+                    start_time = seg.get('start', 0)
+                    if text:
+                        st.markdown(f"**[{start_time:.1f}s]** (Sentiment: {sentiment}): {text}")
+                if len(segments) > 5:
+                    st.markdown(f"... and {len(segments) - 5} more segments")
+            st.download_button(
+                "⬇️ Download Audio Analysis JSON", 
+                json.dumps(audio_data, indent=2).encode('utf-8'), 
+                file_name=f"{video_id}_audio.json",
+                mime="application/json",
+                key="audio_download"
+            )
 
     # b. Video Analysis (same as channel analytics)
-    st.markdown("---")
-    st.markdown("## 🎬 Video Frame Analysis")
-    
-    video_analysis = result.get("video_analysis")
-    if video_analysis and video_analysis != "Vision analysis failed":
-        st.markdown("### LLM Vision Analysis (Emotions, Products, Creator Nature)")
-        st.markdown(video_analysis)
-    
-    # Frames data
-    frames_file = output_dir / f"{video_id}_frames.json"
-    frames_data = _safe_read_json(frames_file)
-    if frames_data:
-        frame_count = len(frames_data) if isinstance(frames_data, list) else 0
-        st.markdown(f"**Extracted {frame_count} frames for analysis**")
-        
-        st.download_button(
-            "⬇️ Download Frames JSON", 
-            json.dumps(frames_data, indent=2).encode('utf-8'), 
-            file_name=f"{video_id}_frames.json",
-            mime="application/json",
-            key="frames_download"
-        )
+    with st.expander("🎬 Video Frame Analysis", expanded=False):
+        video_analysis = result.get("video_analysis")
+        if video_analysis and video_analysis != "Vision analysis failed":
+            st.markdown("### LLM Vision Analysis (Emotions, Products, Creator Nature)")
+            st.markdown(video_analysis)
+        # Frames data
+        frames_file = output_dir / f"{video_id}_frames.json"
+        frames_data = _safe_read_json(frames_file)
+        if frames_data:
+            frame_count = len(frames_data) if isinstance(frames_data, list) else 0
+            st.markdown(f"**Extracted {frame_count} frames for analysis**")
+            st.download_button(
+                "⬇️ Download Frames JSON", 
+                json.dumps(frames_data, indent=2).encode('utf-8'), 
+                file_name=f"{video_id}_frames.json",
+                mime="application/json",
+                key="frames_download"
+            )
 
     # c. Comments Analysis (same as channel analytics)
-    st.markdown("---")
-    st.markdown("## 💬 Comments Analysis")
-    
-    comments_analysis = result.get("comments_analysis")
-    if comments_analysis:
-        st.markdown("### Comments Summary")
-        st.markdown(comments_analysis)
-    
-    # Detailed comments data
-    comments_file = output_dir / f"{video_id}_comments.json"
-    comments_data = _safe_read_json(comments_file)
-    if comments_data:
-        comments_list = comments_data if isinstance(comments_data, list) else []
-        if comments_list:
-            # Calculate and display sentiment stats
-            sentiments = [c.get('sentiment', 0) for c in comments_list if 'sentiment' in c]
-            if sentiments:
-                avg_sentiment = sum(sentiments) / len(sentiments)
-                positive_count = sum(1 for s in sentiments if s > 0.1)
-                negative_count = sum(1 for s in sentiments if s < -0.1)
-                
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Total Comments", len(comments_list))
-                col2.metric("Avg Sentiment", f"{avg_sentiment:.2f}")
-                col3.metric("Positive", positive_count)
-                col4.metric("Negative", negative_count)
-            
-            # Show sample comments
-            st.markdown("### Sample Comments with Sentiment")
-            for i, comment in enumerate(comments_list[:5]):
-                author = comment.get('author', 'Unknown')
-                text = comment.get('text', comment.get('textDisplay', ''))
-                sentiment = comment.get('sentiment', 'N/A')
-                likes = comment.get('likeCount', 0)
-                
-                st.markdown(f"**{author}** (Sentiment: {sentiment}, Likes: {likes})")
-                st.markdown(f"> {text[:200]}{'...' if len(text) > 200 else ''}")
-        
-        st.download_button(
-            "⬇️ Download Comments Analysis JSON", 
-            json.dumps(comments_data, indent=2).encode('utf-8'), 
-            file_name=f"{video_id}_comments.json",
-            mime="application/json",
-            key="comments_download"
-        )
+    with st.expander("💬 Comments Analysis", expanded=False):
+        comments_analysis = result.get("comments_analysis")
+        if comments_analysis:
+            st.markdown("### Comments Summary")
+            st.markdown(comments_analysis)
+        # Detailed comments data
+        comments_file = output_dir / f"{video_id}_comments.json"
+        comments_data = _safe_read_json(comments_file)
+        if comments_data:
+            comments_list = comments_data if isinstance(comments_data, list) else []
+            if comments_list:
+                # Calculate and display sentiment stats
+                sentiments = [c.get('sentiment', 0) for c in comments_list if 'sentiment' in c]
+                if sentiments:
+                    avg_sentiment = sum(sentiments) / len(sentiments)
+                    positive_count = sum(1 for s in sentiments if s > 0.1)
+                    negative_count = sum(1 for s in sentiments if s < -0.1)
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Total Comments", len(comments_list))
+                    col2.metric("Avg Sentiment", f"{avg_sentiment:.2f}")
+                    col3.metric("Positive", positive_count)
+                    col4.metric("Negative", negative_count)
+                # Show sample comments
+                st.markdown("### Sample Comments with Sentiment")
+                for i, comment in enumerate(comments_list[:5]):
+                    author = comment.get('author', 'Unknown')
+                    text = comment.get('text', comment.get('textDisplay', ''))
+                    sentiment = comment.get('sentiment', 'N/A')
+                    likes = comment.get('likeCount', 0)
+                    st.markdown(f"**{author}** (Sentiment: {sentiment}, Likes: {likes})")
+                    st.markdown(f"> {text[:200]}{'...' if len(text) > 200 else ''}")
+            st.download_button(
+                "⬇️ Download Comments Analysis JSON", 
+                json.dumps(comments_data, indent=2).encode('utf-8'), 
+                file_name=f"{video_id}_comments.json",
+                mime="application/json",
+                key="comments_download"
+            )
 
     # d. Statistics (Public + OAuth)
     st.markdown("---")

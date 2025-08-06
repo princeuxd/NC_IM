@@ -340,7 +340,8 @@ def analyze_video(
                     audio_analysis,
                     vision_analysis,
                     result.get('comments_analysis'),
-                    stats
+                    stats,
+                    oauth_analytics
                 )
 
                 summary = client.chat(
